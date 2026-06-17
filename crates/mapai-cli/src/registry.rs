@@ -32,5 +32,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-kotlin")]
     registry.register(Box::new(mapai_lang_kotlin::KotlinExtractor));
 
+    #[cfg(feature = "lang-ruby")]
+    registry.register(Box::new(mapai_lang_ruby::RubyExtractor));
+
     registry
 }
