@@ -26,9 +26,10 @@ mapai-lang-rust = { path = "../mapai-lang-rust", optional = true }
 mapai-lang-kotlin = { path = "../mapai-lang-kotlin", optional = true }
 mapai-lang-ruby = { path = "../mapai-lang-ruby", optional = true }
 mapai-lang-php = { path = "../mapai-lang-php", optional = true }
+mapai-lang-c = { path = "../mapai-lang-c", optional = true }
 
 [features]
-default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust", "lang-kotlin", "lang-ruby", "lang-php"]
+default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust", "lang-kotlin", "lang-ruby", "lang-php", "lang-c"]
 lang-go = ["dep:mapai-lang-go"]
 lang-python = ["dep:mapai-lang-python"]
 lang-java = ["dep:mapai-lang-java"]
@@ -38,3 +39,4 @@ lang-rust = ["dep:mapai-lang-rust"]
 lang-kotlin = ["dep:mapai-lang-kotlin"]
 lang-ruby = ["dep:mapai-lang-ruby"]
 lang-php = ["dep:mapai-lang-php"]
+lang-c = ["dep:mapai-lang-c"]

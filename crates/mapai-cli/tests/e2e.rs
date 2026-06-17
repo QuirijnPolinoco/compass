@@ -43,6 +43,10 @@ fn fixture_php() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-php")
 }
 
+fn fixture_c() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-c")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -85,6 +89,25 @@ fn overview_of_go_fixture() {
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
     assert!(stdout.contains("go"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn overview_of_c_fixture() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("overview")
+        .arg(fixture_c())
+        .output()
+        .expect("run mapai");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // main.c + util.h; `#include "util.h"` resolves to one edge. (Language id is "c", too
+    // short to assert unambiguously — the file/edge counts confirm the C extractor ran.)
+    assert!(stdout.contains("files:        2"), "stdout:\n{stdout}");
+    assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
+    assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
 }
 
 #[test]

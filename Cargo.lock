@@ -512,6 +512,7 @@ dependencies = [
  "mapai-core",
  "mapai-engine",
  "mapai-extract",
+ "mapai-lang-c",
  "mapai-lang-csharp",
  "mapai-lang-go",
  "mapai-lang-java",
@@ -551,6 +552,16 @@ version = "0.1.0"
 dependencies = [
  "mapai-core",
  "tree-sitter",
+]
+
+[[package]]
+name = "mapai-lang-c"
+version = "0.1.0"
+dependencies = [
+ "mapai-core",
+ "mapai-extract",
+ "tree-sitter",
+ "tree-sitter-c",
 ]
 
 [[package]]
@@ -1138,6 +1149,16 @@ dependencies = [
  "regex-syntax",
  "serde_json",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-c"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9b2eb57a55fed6b00812912e730b7a275cf4fe98bfd6a5d76263d4438371728"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

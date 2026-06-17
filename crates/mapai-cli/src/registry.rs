@@ -38,5 +38,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-php")]
     registry.register(Box::new(mapai_lang_php::PhpExtractor));
 
+    #[cfg(feature = "lang-c")]
+    registry.register(Box::new(mapai_lang_c::CExtractor));
+
     registry
 }
