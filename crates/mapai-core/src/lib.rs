@@ -212,12 +212,22 @@ pub struct Overview {
     pub import_edge_count: usize,
     pub diagnostic_count: usize,
     pub languages: Vec<LanguageStat>,
+    /// The files with the most import connections — where the important logic tends to
+    /// live (FR-16/B3). Capped to the top handful.
+    pub most_connected: Vec<ConnectedFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageStat {
     pub language: LanguageId,
     pub file_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectedFile {
+    pub file: String,
+    /// Number of import edges touching this file (in + out).
+    pub connections: usize,
 }
 
 /// What a file depends on and what depends on it (FR-10/B2).
@@ -255,12 +265,34 @@ impl MapQuery for Graph {
                 .cmp(&a.file_count)
                 .then_with(|| a.language.as_str().cmp(b.language.as_str()))
         });
+        let mut degree: HashMap<FileId, usize> = HashMap::new();
+        for (from, to) in &self.imports {
+            *degree.entry(*from).or_insert(0) += 1;
+            *degree.entry(*to).or_insert(0) += 1;
+        }
+        let mut most_connected: Vec<ConnectedFile> = degree
+            .into_iter()
+            .filter_map(|(id, connections)| {
+                self.file_path(id).map(|p| ConnectedFile {
+                    file: p.to_string_lossy().into_owned(),
+                    connections,
+                })
+            })
+            .collect();
+        most_connected.sort_by(|a, b| {
+            b.connections
+                .cmp(&a.connections)
+                .then_with(|| a.file.cmp(&b.file))
+        });
+        most_connected.truncate(10);
+
         Overview {
             file_count: self.files.len(),
             symbol_count: self.symbols.len(),
             import_edge_count: self.imports.len(),
             diagnostic_count: self.diagnostics.len(),
             languages,
+            most_connected,
         }
     }
 

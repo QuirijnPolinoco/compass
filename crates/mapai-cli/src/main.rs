@@ -72,6 +72,12 @@ fn run_overview(path: &Path) -> ExitCode {
             );
         }
     }
+    if !overview.most_connected.is_empty() {
+        println!("  most connected:");
+        for c in &overview.most_connected {
+            println!("    {:>3}  {}", c.connections, c.file);
+        }
+    }
     ExitCode::SUCCESS
 }
 
