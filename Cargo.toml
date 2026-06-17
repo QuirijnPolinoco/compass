@@ -14,6 +14,7 @@ members = [
     "crates/mapai-lang-rust",
     "crates/mapai-lang-kotlin",
     "crates/mapai-lang-ruby",
+    "crates/mapai-lang-php",
 ]
 # The new-language skeleton is intentionally NOT a workspace member: it must never
 # link into the binary, register a fake language, or gate `cargo build --workspace`.
@@ -51,6 +52,7 @@ tree-sitter-typescript = "0.23.2"
 tree-sitter-rust = "0.24.2"
 tree-sitter-kotlin-ng = "1.1.0"
 tree-sitter-ruby = "0.23.1"
+tree-sitter-php = "0.24.2"
 
 [profile.release]
 # Release binary is the shipped artifact (A2). LTO + 1 codegen unit for size/speed;
