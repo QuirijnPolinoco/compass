@@ -382,7 +382,7 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "mapai-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "mapai-engine",
@@ -397,14 +397,14 @@ dependencies = [
 
 [[package]]
 name = "mapai-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "mapai-engine"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "ignore",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-extract"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "tree-sitter",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-lang-csharp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "mapai-extract",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-lang-go"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "mapai-extract",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-lang-java"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "mapai-extract",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-lang-python"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "mapai-extract",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-lang-typescript"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "mapai-core",
  "mapai-extract",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "mapai-mcp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "mapai-core",
