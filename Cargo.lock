@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "compass-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "compass-core",
@@ -129,14 +129,14 @@ dependencies = [
 
 [[package]]
 name = "compass-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "compass-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "compass-core",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "compass-extract"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "tempfile",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-c"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-csharp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-go"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-java"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-kotlin"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-php"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-python"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-ruby"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-rust"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "compass-lang-typescript"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "compass-core",
  "compass-extract",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "compass-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "compass-core",
