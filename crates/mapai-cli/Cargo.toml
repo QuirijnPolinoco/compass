@@ -23,12 +23,14 @@ mapai-lang-java = { path = "../mapai-lang-java", optional = true }
 mapai-lang-csharp = { path = "../mapai-lang-csharp", optional = true }
 mapai-lang-typescript = { path = "../mapai-lang-typescript", optional = true }
 mapai-lang-rust = { path = "../mapai-lang-rust", optional = true }
+mapai-lang-kotlin = { path = "../mapai-lang-kotlin", optional = true }
 
 [features]
-default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust"]
+default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust", "lang-kotlin"]
 lang-go = ["dep:mapai-lang-go"]
 lang-python = ["dep:mapai-lang-python"]
 lang-java = ["dep:mapai-lang-java"]
 lang-csharp = ["dep:mapai-lang-csharp"]
 lang-typescript = ["dep:mapai-lang-typescript"]
 lang-rust = ["dep:mapai-lang-rust"]
+lang-kotlin = ["dep:mapai-lang-kotlin"]

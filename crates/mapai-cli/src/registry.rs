@@ -29,5 +29,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-rust")]
     registry.register(Box::new(mapai_lang_rust::RustExtractor));
 
+    #[cfg(feature = "lang-kotlin")]
+    registry.register(Box::new(mapai_lang_kotlin::KotlinExtractor));
+
     registry
 }
