@@ -20,5 +20,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-java")]
     registry.register(Box::new(mapai_lang_java::JavaExtractor));
 
+    #[cfg(feature = "lang-csharp")]
+    registry.register(Box::new(mapai_lang_csharp::CSharpExtractor));
+
     registry
 }

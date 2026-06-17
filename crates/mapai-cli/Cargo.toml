@@ -20,9 +20,11 @@ mapai-mcp.workspace = true
 mapai-lang-go = { path = "../mapai-lang-go", optional = true }
 mapai-lang-python = { path = "../mapai-lang-python", optional = true }
 mapai-lang-java = { path = "../mapai-lang-java", optional = true }
+mapai-lang-csharp = { path = "../mapai-lang-csharp", optional = true }
 
 [features]
-default = ["lang-go", "lang-python", "lang-java"]
+default = ["lang-go", "lang-python", "lang-java", "lang-csharp"]
 lang-go = ["dep:mapai-lang-go"]
 lang-python = ["dep:mapai-lang-python"]
 lang-java = ["dep:mapai-lang-java"]
+lang-csharp = ["dep:mapai-lang-csharp"]
