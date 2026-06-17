@@ -45,10 +45,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build with only ${{ matrix.feature }}
-        run: cargo build -p mapai-cli --no-default-features --features ${{ matrix.feature }}
+        run: cargo build -p compass-cli --no-default-features --features ${{ matrix.feature }}
       - name: Assert exactly this language registers
         run: |
-          out=$(cargo run -q -p mapai-cli --no-default-features --features ${{ matrix.feature }} -- languages)
+          out=$(cargo run -q -p compass-cli --no-default-features --features ${{ matrix.feature }} -- languages)
           echo "$out"
           echo "$out" | grep -q "Supported languages (1):"
           echo "$out" | grep -q -- "- ${{ matrix.lang }}"

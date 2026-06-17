@@ -11,6 +11,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# The release step creates/updates a GitHub Release, which needs write access to
+# repository contents. Without this, GITHUB_TOKEN is often read-only and the upload 403s.
+permissions:
+  contents: write
+
 jobs:
   build:
     name: ${{ matrix.target }}
@@ -39,23 +44,23 @@ jobs:
         env:
           # Compile the tree-sitter C sources with the musl-targeting compiler.
           CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo build --release -p mapai-cli --target ${{ matrix.target }}
+        run: cargo build --release -p compass-cli --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: matrix.os != 'windows-latest'
-        run: tar -czf "mapai-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" mapai
+        run: tar -czf "compass-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" compass
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
-        run: Compress-Archive -Path "target/${{ matrix.target }}/release/mapai.exe" -DestinationPath "mapai-${{ matrix.target }}.zip"
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/compass.exe" -DestinationPath "compass-${{ matrix.target }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mapai-${{ matrix.target }}
+          name: compass-${{ matrix.target }}
           path: |
-            mapai-${{ matrix.target }}.tar.gz
-            mapai-${{ matrix.target }}.zip
+            compass-${{ matrix.target }}.tar.gz
+            compass-${{ matrix.target }}.zip
           if-no-files-found: ignore
 
       - name: Attach to GitHub Release
@@ -63,6 +68,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            mapai-${{ matrix.target }}.tar.gz
-            mapai-${{ matrix.target }}.zip
+            compass-${{ matrix.target }}.tar.gz
+            compass-${{ matrix.target }}.zip
           fail_on_unmatched_files: false
