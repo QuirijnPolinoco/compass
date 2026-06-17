@@ -11,6 +11,10 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture")
 }
 
+fn fixture_py() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-py")
+}
+
 #[test]
 fn overview_of_go_fixture() {
     let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
@@ -28,6 +32,25 @@ fn overview_of_go_fixture() {
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
     assert!(stdout.contains("go"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn overview_of_python_fixture() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("overview")
+        .arg(fixture_py())
+        .output()
+        .expect("run mapai");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // 3 .py files; `from app.util import helper` resolves to one edge; `os` is external.
+    assert!(stdout.contains("files:        3"), "stdout:\n{stdout}");
+    assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
+    assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
+    assert!(stdout.contains("python"), "stdout:\n{stdout}");
 }
 
 /// Drive a real MCP handshake over stdio and confirm the `overview` tool returns the map.

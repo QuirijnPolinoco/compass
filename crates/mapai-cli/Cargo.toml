@@ -18,7 +18,9 @@ mapai-engine.workspace = true
 mapai-mcp.workspace = true
 # Language crates are optional + feature-gated; the composition root selects them.
 mapai-lang-go = { path = "../mapai-lang-go", optional = true }
+mapai-lang-python = { path = "../mapai-lang-python", optional = true }
 
 [features]
-default = ["lang-go"]
+default = ["lang-go", "lang-python"]
 lang-go = ["dep:mapai-lang-go"]
+lang-python = ["dep:mapai-lang-python"]

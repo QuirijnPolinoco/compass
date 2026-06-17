@@ -14,5 +14,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-go")]
     registry.register(Box::new(mapai_lang_go::GoExtractor));
 
+    #[cfg(feature = "lang-python")]
+    registry.register(Box::new(mapai_lang_python::PythonExtractor));
+
     registry
 }
