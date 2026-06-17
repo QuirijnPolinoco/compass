@@ -8,6 +8,7 @@ members = [
     "crates/mapai-cli",
     "crates/mapai-lang-go",
     "crates/mapai-lang-python",
+    "crates/mapai-lang-java",
 ]
 # The new-language skeleton is intentionally NOT a workspace member: it must never
 # link into the binary, register a fake language, or gate `cargo build --workspace`.
@@ -39,6 +40,7 @@ thiserror = "2"
 tree-sitter = "0.26.9"
 tree-sitter-go = "0.25.0"
 tree-sitter-python = "0.25.0"
+tree-sitter-java = "0.23.5"
 
 [profile.release]
 # Release binary is the shipped artifact (A2). LTO + 1 codegen unit for size/speed;
