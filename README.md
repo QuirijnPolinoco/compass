@@ -21,7 +21,7 @@ useful on its own to a human, too.
 
 ## Supported languages
 
-Go · Python · Java · C# · TypeScript/JavaScript
+Go · Python · Java · C# · TypeScript/JavaScript · Rust
 
 Adding a language is a self-contained unit of work behind a stable interface — see
 [CONTRIBUTING.md](CONTRIBUTING.md). More languages are on the roadmap in

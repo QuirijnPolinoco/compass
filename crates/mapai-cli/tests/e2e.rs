@@ -27,6 +27,10 @@ fn fixture_ts() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-ts")
 }
 
+fn fixture_rust() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-rust")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -69,6 +73,25 @@ fn overview_of_go_fixture() {
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
     assert!(stdout.contains("go"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn overview_of_rust_fixture() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("overview")
+        .arg(fixture_rust())
+        .output()
+        .expect("run mapai");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // 2 .rs files; `mod util;` resolves to src/util.rs.
+    assert!(stdout.contains("files:        2"), "stdout:\n{stdout}");
+    assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
+    assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
+    assert!(stdout.contains("rust"), "stdout:\n{stdout}");
 }
 
 #[test]

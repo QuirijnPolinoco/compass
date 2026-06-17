@@ -26,5 +26,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-typescript")]
     registry.register(Box::new(mapai_lang_typescript::TypeScriptExtractor));
 
+    #[cfg(feature = "lang-rust")]
+    registry.register(Box::new(mapai_lang_rust::RustExtractor));
+
     registry
 }
