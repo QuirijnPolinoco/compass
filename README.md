@@ -15,9 +15,9 @@ useful on its own to a human, too.
 - **Model-agnostic** — it speaks MCP, so it works with any assistant (Claude, Gemini,
   ChatGPT, …) without integrating with any of them.
 
-> **Status:** early. The core engine, the MCP server, and all Tier 1 languages work and
-> are tested. Prebuilt release binaries and live (watch-based) freshness are on the
-> roadmap — for now, build from source (below).
+> **Status:** early but functional. The core engine, the MCP server, all Tier 1 languages,
+> and live re-mapping (`mapai watch`) work and are tested. Prebuilt v0.1.0 binaries are on
+> the [releases page](https://github.com/QuirijnPolinoco/MapAI/releases).
 
 ## Supported languages
 
@@ -66,6 +66,9 @@ mapai deps path/to/repo src/main.go
 
 # Imports that point at files that don't exist
 mapai broken path/to/repo
+
+# Keep the map fresh automatically as you edit (Ctrl+C to stop)
+mapai watch path/to/repo
 
 # Which languages this build supports
 mapai languages

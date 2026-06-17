@@ -15,8 +15,8 @@
 
 MapAI walks a repository, parses each file locally with tree-sitter, extracts symbols and
 imports, assembles a **language-agnostic graph**, and serves that graph to humans (CLI) and
-to AI assistants (an MCP server over stdio). Live freshness (re-parse on edit) is a planned
-post-v1 feature.
+to AI assistants (an MCP server over stdio). Live freshness keeps the map current as you
+edit, via `mapai watch` (FR-13/F1).
 
 The system is a **Cargo workspace** with **five infrastructure crates** plus **one
 feature-gated crate per language** behind one stable `Extractor` trait (the North Star,
@@ -52,14 +52,14 @@ provider** — it only speaks MCP, so it works with every model (FR-5/C2, FR-7/G
 
 ![Containers](diagrams/containers.svg)
 
-MapAI ships as **one binary**. In v1 it has two entry modes around a shared engine; a third
-(the watcher) is planned post-v1:
+MapAI ships as **one binary** with three entry modes around a shared engine:
 
 - **CLI** (`mapai`) — zero-config command run inside a repo; prints the human overview and
   can launch the server. It is also the **composition root** (it decides which language
   crates are compiled in and registers them).
 - **MCP server** — long-running process (stdio) that an AI host launches and queries.
-- **Watcher** *(post-v1, FR-13/F1)* — turns file-system events into incremental graph updates.
+- **Watcher** *(FR-13/F1)* — `mapai watch`: turns file-system events into map updates (v1
+  re-indexes on change; incremental single-file reparse is a planned optimization).
 
 All modes drive the same in-process **engine** (walk → detect → parse → extract → assemble
 → resolve → query) and read/write the same on-disk **cache** under `.mapai/`.
@@ -74,7 +74,7 @@ features); core, engine, and mcp never do.
 |-------------------|---------------------------|----------|
 | `mapai-core` | Language-agnostic domain: graph model, `File`/`Symbol`/edge types, `LanguageId`, cross-crate `Diagnostic`, query engine + a query **port** trait. Owns the serde-serialized form (versioned). | (depended on by everything) |
 | `mapai-extract` | The **stable contract**: the `Extractor` trait (two phases — `extract` + `resolve`), the tree-sitter parse harness, `RawImport`, `ResolutionContext`, `Detection { extensions, shebangs }`, an opaque `LangConfig` carrier, the unresolved/extractor error variant, and the `Registry` + `register` entry point | `mapai-core` |
-| `mapai-engine` | Orchestrate full/incremental indexing. Internal modules: `walk` (gitignore-aware walk + registry-driven detection), `index` (rayon parse+extract, builds the `ResolutionContext`, calls `Extractor::resolve`, assembles the graph), `cache` (`.mapai/` persistence), `config` (`.mapai.toml`). `watch` is added here post-v1. | `mapai-core`, `mapai-extract` |
+| `mapai-engine` | Orchestrate full/incremental indexing. Internal modules: `walk` (gitignore-aware walk + registry-driven detection), `index` (rayon parse+extract, builds the `ResolutionContext`, calls `Extractor::resolve`, assembles the graph), `cache` (`.mapai/` persistence), `watch` (live re-mapping, FR-13); `config` (`.mapai.toml`) is planned. | `mapai-core`, `mapai-extract` |
 | `mapai-mcp` | Expose query operations as MCP tools over stdio (`rmcp`); `schemars` DTO wrappers own the wire schema | `mapai-core` (query types + query **port**) — **not** the engine |
 | `mapai-cli` | Binary entrypoint `mapai`; arg parsing; **composition root**: explicit `cfg`-gated `register_all()`, and wires the concrete engine into the MCP query port | everything above + the language crates (feature-gated) |
 | `mapai-lang-*` | One crate per language: `Detection`, grammar, symbol extraction, **and** that language's import-resolution algorithm; ships its own fixtures + snapshot tests | `mapai-extract`, `mapai-core` |
@@ -143,9 +143,10 @@ for file X*) → the query **port** implemented by `mapai-core` → returns a sm
 subgraph (FR-11/C3) of **only real, mapped files** (FR-6/D1). The CLI wires the concrete
 engine/graph into the port at startup, so `mapai-mcp` stays engine-agnostic.
 
-**Flow C — Live freshness *(post-v1, FR-13/F1)*.** `engine::watch` receives a save event →
-debounces → re-runs `extract` + `resolve` for just that file → patches the affected
-nodes/edges. Steady-state cost is one file, not the repo.
+**Flow C — Live freshness (FR-13/F1).** `mapai watch` runs `engine::watch`: a debounced,
+gitignore/cache-aware file watcher (`notify`). On change it re-indexes the repo and refreshes
+the cache. *Planned optimization:* reparse only the changed file and patch the affected
+nodes/edges, so steady-state cost is one file, not the repo.
 
 ## 7. NFR strategy
 
@@ -206,9 +207,9 @@ mapai/
 │   │                                #   Detection{extensions, shebangs}, LangConfig, Registry + register entry.
 │   │                                #   Depends on mapai-core ONLY.
 │   │
-│   │  ── orchestration (walk + index + cache as modules; watch is post-v1) ──
-│   ├── mapai-engine/                # engine::walk · engine::index · engine::cache · engine::config
-│   │                                #   (engine::watch added post-v1). Depends on core + extract.
+│   │  ── orchestration (walk + index + cache + watch as modules) ──
+│   ├── mapai-engine/                # engine::walk · engine::index · engine::cache · engine::watch
+│   │                                #   (engine::config is planned). Depends on core + extract.
 │   │
 │   │  ── separable protocol surface ──
 │   ├── mapai-mcp/                   # MCP server (rmcp) + tool defs; schemars DTOs own the wire schema.

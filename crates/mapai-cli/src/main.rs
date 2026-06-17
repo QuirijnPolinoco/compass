@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         "languages" => run_languages(),
         "deps" => run_deps(&path, args.get(2).map(String::as_str)),
         "broken" => run_broken(&path),
+        "watch" => run_watch(&path),
         "serve" => run_serve(&path),
         "help" | "-h" | "--help" => {
             print_help();
@@ -135,6 +136,43 @@ fn run_languages() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_watch(path: &Path) -> ExitCode {
+    let Some(graph) = build_graph(path) else {
+        return ExitCode::FAILURE;
+    };
+    let _ = mapai_engine::cache::save(path, &graph);
+    let ov = graph.overview();
+    println!(
+        "Watching {} — {} files, {} symbols, {} import edges, {} diagnostics",
+        path.display(),
+        ov.file_count,
+        ov.symbol_count,
+        ov.import_edge_count,
+        ov.diagnostic_count
+    );
+    println!("Editing files re-maps automatically. Press Ctrl+C to stop.");
+
+    let result = mapai_engine::watch::watch(path, std::time::Duration::from_millis(500), |paths| {
+        if let Some(graph) = build_graph(path) {
+            let _ = mapai_engine::cache::save(path, &graph);
+            let ov = graph.overview();
+            println!(
+                "~ {} change(s) -> {} files, {} symbols, {} import edges, {} diagnostics",
+                paths.len(),
+                ov.file_count,
+                ov.symbol_count,
+                ov.import_edge_count,
+                ov.diagnostic_count
+            );
+        }
+    });
+    if let Err(e) = result {
+        eprintln!("mapai: watch error: {e:#}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_serve(path: &Path) -> ExitCode {
     let Some(graph) = build_graph(path) else {
         return ExitCode::FAILURE;
@@ -153,6 +191,7 @@ fn print_help() {
     println!("  mapai overview [PATH]    Summarize the repo map (default: current dir)");
     println!("  mapai deps [PATH] <FILE> Show what a file imports and what imports it");
     println!("  mapai broken [PATH]      List imports that point at missing files");
+    println!("  mapai watch [PATH]       Re-map the repo automatically as files change");
     println!("  mapai languages          List supported languages");
     println!("  mapai serve [PATH]       Run the MCP server over stdio (for AI hosts)");
     println!("  mapai help               Show this help");
