@@ -27,10 +27,28 @@ Adding a language is a self-contained unit of work behind a stable interface —
 [CONTRIBUTING.md](CONTRIBUTING.md). More languages are on the roadmap in
 [`ProjectInfo.md`](ProjectInfo.md).
 
-## Build
+## Install
 
-Requires a [Rust toolchain](https://rustup.rs) and a C compiler (for the tree-sitter
-grammars: MSVC Build Tools on Windows, `cc`/Xcode CLT on Linux/macOS).
+**Recommended — download a prebuilt binary.** MapAI is a single self-contained executable:
+no runtime, no dependencies. Grab the one for your platform from the
+[latest release](https://github.com/QuirijnPolinoco/MapAI/releases/latest), unpack it, and
+put `mapai` on your `PATH`:
+
+| Platform | Asset |
+|----------|-------|
+| Linux (x86-64) | `mapai-x86_64-unknown-linux-gnu.tar.gz` (or `-musl` for a fully static build) |
+| macOS (Apple Silicon) | `mapai-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `mapai-x86_64-apple-darwin.tar.gz` |
+| Windows (x86-64) | `mapai-x86_64-pc-windows-msvc.zip` |
+
+Then run `mapai overview .` in any repository. (A `brew` / `scoop` / `cargo-binstall`
+one-liner is on the roadmap.)
+
+## Build from source
+
+Alternatively, build it yourself. Requires a [Rust toolchain](https://rustup.rs) and a C
+compiler (for the tree-sitter grammars: MSVC Build Tools on Windows, `cc`/Xcode CLT on
+Linux/macOS).
 
 ```sh
 cargo build --release
