@@ -1,0 +1,68 @@
+name: Release
+
+# Builds the single self-contained binary for each platform (FR-2/A2). The linux-musl
+# and aarch64 targets need a real C toolchain because the tree-sitter grammars are C —
+# this is why the build is a per-target matrix, not a from-one-host cross-compile.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl C toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        env:
+          # Compile the tree-sitter C sources with the musl-targeting compiler.
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release -p mapai-cli --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        run: tar -czf "mapai-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" mapai
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/mapai.exe" -DestinationPath "mapai-${{ matrix.target }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapai-${{ matrix.target }}
+          path: |
+            mapai-${{ matrix.target }}.tar.gz
+            mapai-${{ matrix.target }}.zip
+          if-no-files-found: ignore
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mapai-${{ matrix.target }}.tar.gz
+            mapai-${{ matrix.target }}.zip
+          fail_on_unmatched_files: false

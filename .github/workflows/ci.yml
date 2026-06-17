@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  language-isolation:
+    # Build the binary with ONLY one language compiled in, and assert it registers
+    # exactly that language. Guards the per-crate isolation (ADR-0002) and the explicit
+    # registration that the single binary depends on (ADR-0003).
+    name: isolate ${{ matrix.lang }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { feature: lang-go, lang: go }
+          - { feature: lang-python, lang: python }
+          - { feature: lang-java, lang: java }
+          - { feature: lang-csharp, lang: csharp }
+          - { feature: lang-typescript, lang: typescript }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build with only ${{ matrix.feature }}
+        run: cargo build -p mapai-cli --no-default-features --features ${{ matrix.feature }}
+      - name: Assert exactly this language registers
+        run: |
+          out=$(cargo run -q -p mapai-cli --no-default-features --features ${{ matrix.feature }} -- languages)
+          echo "$out"
+          echo "$out" | grep -q "Supported languages (1):"
+          echo "$out" | grep -q -- "- ${{ matrix.lang }}"
