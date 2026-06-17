@@ -12,3 +12,6 @@ compass-core.workspace = true
 compass-extract.workspace = true
 tree-sitter.workspace = true
 tree-sitter-c.workspace = true
+
+[dev-dependencies]
+compass-extract = { workspace = true, features = ["test-util"] }

@@ -10,3 +10,8 @@ rust-version.workspace = true
 [dependencies]
 compass-core.workspace = true
 tree-sitter.workspace = true
+tempfile = { version = "3", optional = true }
+
+[features]
+# Test-support: a MockResolutionContext for unit-testing language `resolve()` phases.
+test-util = ["dep:tempfile"]

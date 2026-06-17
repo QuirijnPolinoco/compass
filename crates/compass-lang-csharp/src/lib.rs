@@ -195,15 +195,27 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Enum, Interface, Method, Struct};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    // A rich sample: a class with a constructor + two methods, an interface with one
+    // method declaration, an enum, a struct, and a record (records map to Struct).
+    // Imports cover a BCL namespace (`System`), an internal namespace (`Company.Util`),
+    // an aliased using, and a third-party namespace. NB: the extractor captures the
+    // first qualified_name/identifier under a using_directive, so for an aliased
+    // `using Json = System.Text.Json;` it captures the alias identifier `Json`.
     const SAMPLE: &str = r#"
 using System;
 using Company.Util;
+using Json = System.Text.Json;
+using ThirdParty.Widgets;
 
 namespace Company.App
 {
     public class Program
     {
+        public Program() {}
         public void Run() {}
         public static void Main(string[] args) {}
     }
@@ -216,53 +228,102 @@ namespace Company.App
     enum Color { Red, Green }
 
     struct Point { public int X; }
+
+    record Pair(int A, int B);
 }
 "#;
 
-    #[test]
-    fn extracts_symbols_and_imports() {
+    fn extract(src: &str) -> Extraction {
         let cs = CSharpExtractor;
-        let grammar = cs.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = cs.extract(SAMPLE.as_bytes(), &tree);
+        let tree = compass_extract::parse(&cs.grammar(), src.as_bytes()).expect("parse");
+        cs.extract(src.as_bytes(), &tree)
+    }
 
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("Program", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("IGreeter", SymbolKind::Interface)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Color", SymbolKind::Enum)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Point", SymbolKind::Struct)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Run", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Main", SymbolKind::Method)),
-            "{by_name:?}"
-        );
+        got.sort();
+        let mut want = vec![
+            ("Color".to_string(), Enum),
+            ("Greet".to_string(), Method), // interface method declaration
+            ("IGreeter".to_string(), Interface),
+            ("Main".to_string(), Method),
+            ("Pair".to_string(), Struct), // record -> Struct
+            ("Point".to_string(), Struct),
+            ("Program".to_string(), Class),
+            ("Program".to_string(), Method), // constructor -> Method (same name as class)
+            ("Run".to_string(), Method),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert!(specs.contains(&"System"), "{specs:?}");
-        assert!(specs.contains(&"Company.Util"), "{specs:?}");
+        // Source order; the aliased using `Json = System.Text.Json` yields the alias
+        // identifier `Json` (the first qualified_name/identifier under the directive).
+        assert_eq!(
+            specs,
+            ["System", "Company.Util", "Json", "ThirdParty.Widgets",]
+        );
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // The resolver re-reads the current file for its `namespace` line, derives the
+        // source root by stripping `Company/App` from the file's dir, then maps each
+        // `using A.B` onto `<root>/A/B`. C# treats unmapped namespaces as External
+        // (BCL / NuGet), never as Unresolved — so there is no broken-import variant here.
+        let ctx = MockResolutionContext::new()
+            .current(
+                "src/Company/App/Program.cs",
+                "namespace Company.App\n{\n}\n",
+            )
+            .file("src/Company/Util/Helpers.cs");
+        let imports = [
+            raw("System"),       // BCL -> no `src/System` dir -> External
+            raw("Company.Util"), // -> `src/Company/Util` (has a file) -> Resolved
+            raw("Missing.Pkg"),  // no such dir -> External (not Unresolved)
+        ];
+        let resolved = CSharpExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        assert!(
+            matches!(resolved[0], ResolvedImport::External { .. }),
+            "System is a BCL namespace: {:?}",
+            resolved[0]
+        );
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/Company/Util/Helpers.cs"))
+            }
+            other => panic!("internal `using Company.Util` should resolve, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[2], ResolvedImport::External { .. }),
+            "an unmapped namespace is External, never Unresolved: {:?}",
+            resolved[2]
+        );
     }
 
     #[test]

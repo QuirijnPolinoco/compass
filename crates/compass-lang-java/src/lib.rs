@@ -208,15 +208,23 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Enum, Interface, Method, Struct};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    /// A rich sample exercising every symbol kind the extractor recognizes (class,
+    /// constructor + methods, interface + its method, enum, record) and every import
+    /// shape (single, wildcard, JDK, static).
     const SAMPLE: &str = r#"
 package com.example.app;
 
 import com.example.util.Helper;
 import com.example.util.*;
 import java.util.List;
+import static java.lang.Math.PI;
 
 public class Main {
+    public Main() {}
     public void run() {}
     public static void main(String[] args) {}
 }
@@ -226,49 +234,129 @@ interface Greeter {
 }
 
 enum Color { RED, GREEN }
+
+record Point(int x, int y) {}
 "#;
 
+    fn extract(src: &str) -> Extraction {
+        let x = JavaExtractor;
+        let tree = compass_extract::parse(&x.grammar(), src.as_bytes()).expect("parse");
+        x.extract(src.as_bytes(), &tree)
+    }
+
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
     #[test]
-    fn extracts_symbols_and_imports() {
-        let java = JavaExtractor;
-        let grammar = java.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = java.extract(SAMPLE.as_bytes(), &tree);
-
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("Main", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Interface)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Color", SymbolKind::Enum)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("run", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("main", SymbolKind::Method)),
-            "{by_name:?}"
-        );
+        got.sort();
+        // The record is a Struct; constructors and interface methods are Methods. The
+        // constructor `Main` and the class `Main` share a name but differ in kind.
+        let mut want = vec![
+            ("Color".to_string(), Enum),
+            ("Greeter".to_string(), Interface),
+            ("Main".to_string(), Class),
+            ("Main".to_string(), Method),
+            ("Point".to_string(), Struct),
+            ("greet".to_string(), Method),
+            ("main".to_string(), Method),
+            ("run".to_string(), Method),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert!(specs.contains(&"com.example.util.Helper"), "{specs:?}");
-        assert!(specs.contains(&"com.example.util.*"), "{specs:?}");
-        assert!(specs.contains(&"java.util.List"), "{specs:?}");
+        // Source order; the wildcard keeps its `.*` and the static import surfaces as the
+        // full scoped name (the `static` modifier is dropped).
+        assert_eq!(
+            specs,
+            [
+                "com.example.util.Helper",
+                "com.example.util.*",
+                "java.util.List",
+                "java.lang.Math.PI",
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // resolve() re-reads the importing file for its `package` line, so `current`
+        // writes it to disk. Source root = dir(current_file) minus the package path:
+        // `src/com/example/app` minus `com/example/app` = `src`.
+        let ctx = MockResolutionContext::new()
+            .current(
+                "src/com/example/app/Main.java",
+                "package com.example.app;\n",
+            )
+            .file("src/com/example/util/Helper.java");
+
+        let imports = [
+            raw("com.example.util.Helper"),  // internal -> Resolved to Helper.java
+            raw("java.util.List"),           // JDK, not mapped -> External
+            raw("com.example.missing.Gone"), // internal-looking but not found -> External
+            raw("com.example.util.*"),       // wildcard over a dir with one mapped file
+        ];
+        let resolved = JavaExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        // Exactly one Resolved per non-wildcard import + one per file in the wildcard dir.
+        assert_eq!(resolved.len(), 4);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/com/example/util/Helper.java"))
+            }
+            other => panic!("internal import should resolve, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[1], ResolvedImport::External { .. }),
+            "JDK import is external, got {:?}",
+            resolved[1]
+        );
+        // Java never emits Unresolved: a not-found import is treated as JDK/third-party.
+        assert!(
+            matches!(resolved[2], ResolvedImport::External { .. }),
+            "not-found import is external (never broken), got {:?}",
+            resolved[2]
+        );
+        match &resolved[3] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/com/example/util/Helper.java"))
+            }
+            other => panic!("wildcard should resolve to files in the dir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wildcard_over_empty_dir_is_external() {
+        // A wildcard whose package directory has no mapped files is external, not broken.
+        let ctx = MockResolutionContext::new().current(
+            "src/com/example/app/Main.java",
+            "package com.example.app;\n",
+        );
+        let resolved = JavaExtractor.resolve(&[raw("com.example.nothing.*")], &ctx, &LangConfig);
+        assert!(matches!(resolved[0], ResolvedImport::External { .. }));
     }
 
     #[test]

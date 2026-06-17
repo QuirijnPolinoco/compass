@@ -224,73 +224,184 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Function, Method, Module};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    // A rich sample exercising every extraction path:
+    //  - `module` -> Module, `class` -> Class
+    //  - `method` inside a class/module -> Method
+    //  - `singleton_method` (`def self.x`) -> Method (in a module AND in a class)
+    //  - top-level `method` (`def main`) -> Function
+    //  - a constant assignment (`GREETING = ...`) is NOT a symbol and must be dropped
+    //  - imports: plain `require` is dropped; only `require_relative` survives, in order;
+    //    a relative subdir import and one that won't resolve are included.
     const SAMPLE: &str = r#"
-require 'json'
-require_relative 'util'
+require "json"
+require_relative "util"
+require_relative "helpers/text"
+require_relative "missing"
 
 module Greeting
+  GREETING = "hi"
+
   def self.hello
     "hi"
+  end
+
+  def shout
+    "HI"
   end
 end
 
 class Greeter
+  def initialize(name)
+    @name = name
+  end
+
   def greet
     "hello"
+  end
+
+  def self.create
+    new("anon")
   end
 end
 
 def main
-  puts Greeter.new.greet
+  puts Greeter.new("x").greet
 end
 "#;
 
+    fn extract(src: &str) -> Extraction {
+        let x = RubyExtractor;
+        let tree = compass_extract::parse(&x.grammar(), src.as_bytes()).expect("parse");
+        x.extract(src.as_bytes(), &tree)
+    }
+
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
     #[test]
-    fn extracts_symbols_and_require_relative() {
-        let rb = RubyExtractor;
-        let grammar = rb.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = rb.extract(SAMPLE.as_bytes(), &tree);
-
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("Greeting", SymbolKind::Module)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("greet", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("hello", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("main", SymbolKind::Function)),
-            "{by_name:?}"
-        );
+        got.sort();
 
-        // Only `require_relative` is captured (in-repo); plain `require` is external.
-        let specs: Vec<&str> = extraction
+        let mut want: Vec<(String, SymbolKind)> = vec![
+            ("Greeting".to_string(), Module),
+            ("hello".to_string(), Method), // singleton_method in module
+            ("shout".to_string(), Method), // method in module
+            ("Greeter".to_string(), Class),
+            ("initialize".to_string(), Method),
+            ("greet".to_string(), Method),
+            ("create".to_string(), Method), // singleton_method in class
+            ("main".to_string(), Function), // top-level method
+        ];
+        want.sort();
+
+        // EXACT set: the constant `GREETING` must NOT appear, nothing extra may.
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_all_imports_in_order() {
+        // Plain `require "json"` is dropped; only the three `require_relative`
+        // specifiers survive, in source order.
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert_eq!(specs, vec!["util"], "{specs:?}");
+        assert_eq!(specs, ["util", "helpers/text", "missing"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // Ruby's resolver only classifies a `require_relative` as Resolved (a mapped
+        // .rb file relative to the current file) or Unresolved (no such file). There is
+        // no External branch — plain `require` never reaches resolve (it is dropped at
+        // extract time), so every specifier here is in-repo-relative.
+        let ctx = MockResolutionContext::new()
+            .current("main.rb", "")
+            .file("util.rb")
+            .file("helpers/text.rb");
+
+        let imports = [
+            raw("util"),         // -> util.rb, Resolved
+            raw("helpers/text"), // -> helpers/text.rb (subdir), Resolved
+            raw("missing"),      // -> missing.rb, not mapped -> Unresolved
+        ];
+        let resolved = RubyExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("util.rb"))
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("helpers/text.rb"))
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
+        assert!(matches!(resolved[2], ResolvedImport::Unresolved { .. }));
+    }
+
+    #[test]
+    fn resolve_uses_current_files_directory_and_collapses_dotdot() {
+        // `require_relative` is relative to the *current file's* directory, and `..`
+        // segments climb out of it. From lib/main.rb, "../shared/util" -> shared/util.rb.
+        let ctx = MockResolutionContext::new()
+            .current("lib/main.rb", "")
+            .file("shared/util.rb");
+
+        let resolved = RubyExtractor.resolve(&[raw("../shared/util")], &ctx, &LangConfig);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("shared/util.rb"))
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_accepts_an_explicit_rb_suffix_without_doubling_it() {
+        // A specifier that already ends in `.rb` must not become `util.rb.rb`.
+        let ctx = MockResolutionContext::new()
+            .current("main.rb", "")
+            .file("util.rb");
+
+        let resolved = RubyExtractor.resolve(&[raw("util.rb")], &ctx, &LangConfig);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("util.rb"))
+            }
+            other => panic!("expected Resolved, got {other:?}"),
+        }
     }
 
     #[test]
     fn resolve_path_collapses_segments() {
         assert_eq!(resolve_path("a/b", "util"), "a/b/util");
         assert_eq!(resolve_path("a/b", "../util"), "a/util");
+        assert_eq!(resolve_path("a/b", "./util"), "a/b/util");
+        assert_eq!(resolve_path("", "util"), "util");
+        assert_eq!(resolve_path("a", "../../util"), "util");
     }
 }

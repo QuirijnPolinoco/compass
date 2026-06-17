@@ -196,68 +196,137 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Enum, Function, Struct};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    // A rich sample exercising every emitting node kind plus decoys that must NOT
+    // be extracted: quoted vs. system includes, struct/union/enum with and without
+    // bodies, and functions whose names are nested under pointer/array declarators.
     const SAMPLE: &str = r#"
 #include "util.h"
+#include "missing.h"
 #include <stdio.h>
+#include <stdlib.h>
+
+// Forward declaration (no body) — a type reference, NOT a definition.
+struct Node;
+
+// Enum used only as a return type below (no body here) — not re-extracted.
+enum Color;
 
 struct Point {
     int x;
+    int y;
 };
 
-enum Color { RED, GREEN };
+union Value {
+    int i;
+    float f;
+};
+
+enum Direction { NORTH, SOUTH, EAST, WEST };
 
 int add(int a, int b) {
     return a + b;
 }
 
+// Return type `char *` forces descent through a pointer_declarator.
 char *greet(void) {
     return "hi";
 }
+
+void noop(void) {
+}
+
+struct Point make_point(int x, int y) {
+    struct Point p = { x, y };
+    return p;
+}
 "#;
 
-    #[test]
-    fn extracts_symbols_and_local_includes() {
+    fn extract(src: &str) -> Extraction {
         let c = CExtractor;
-        let grammar = c.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = c.extract(SAMPLE.as_bytes(), &tree);
+        let tree = compass_extract::parse(&c.grammar(), src.as_bytes()).expect("parse");
+        c.extract(src.as_bytes(), &tree)
+    }
 
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("Point", SymbolKind::Struct)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Color", SymbolKind::Enum)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("add", SymbolKind::Function)),
-            "{by_name:?}"
-        );
-        // `char *greet` exercises descending through pointer_declarator.
-        assert!(
-            by_name.contains(&("greet", SymbolKind::Function)),
-            "{by_name:?}"
-        );
+        got.sort();
+        // Only definitions with a body, plus every function (union -> Struct);
+        // the bodyless `struct Node` / `enum Color` decoys are absent.
+        let mut want = vec![
+            ("Direction".to_string(), Enum),
+            ("Point".to_string(), Struct),
+            ("Value".to_string(), Struct),
+            ("add".to_string(), Function),
+            ("greet".to_string(), Function),
+            ("make_point".to_string(), Function),
+            ("noop".to_string(), Function),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        // Quoted include only; the system header `<stdio.h>` is external.
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert_eq!(specs, vec!["util.h"], "{specs:?}");
+        // Quoted includes only, in source order; `<stdio.h>`/`<stdlib.h>` are dropped.
+        assert_eq!(specs, ["util.h", "missing.h"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // C resolves quoted includes relative to the including file and treats a
+        // not-found include as External (flexible `-I` dirs), never Unresolved.
+        let ctx = MockResolutionContext::new()
+            .current("src/main.c", "")
+            .file("src/util.h");
+        let imports = [
+            raw("util.h"),    // resolves to src/util.h relative to src/main.c
+            raw("missing.h"), // quoted but no mapped file -> External
+        ];
+        let resolved = CExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/util.h"))
+            }
+            other => panic!("local include should resolve, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[1], ResolvedImport::External { .. }),
+            "unmapped quoted include is External, not Unresolved"
+        );
     }
 
     #[test]
     fn resolve_path_joins_relative_include() {
         assert_eq!(resolve_path("src", "util.h"), "src/util.h");
         assert_eq!(resolve_path("src/a", "../util.h"), "src/util.h");
+        assert_eq!(resolve_path("", "util.h"), "util.h");
+        assert_eq!(resolve_path("src", "./util.h"), "src/util.h");
     }
 }

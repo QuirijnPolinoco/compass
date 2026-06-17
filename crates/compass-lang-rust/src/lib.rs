@@ -224,9 +224,17 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{
+        Constant, Enum, Function, Interface, Method, Module, Other, Struct,
+    };
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    /// A sample exercising every symbol kind the extractor recognises plus both file-backed
+    /// (`mod foo;`) and inline (`mod foo { .. }`) module declarations.
     const SAMPLE: &str = r#"
 mod util;
+mod missing;
 
 pub mod inline {
     pub fn helper() {}
@@ -234,77 +242,159 @@ pub mod inline {
 
 use std::collections::HashMap;
 
-pub struct Point { x: i32 }
+pub struct Point {
+    x: i32,
+}
 
-pub enum Color { Red, Green }
+pub union Bits {
+    int: u32,
+    float: f32,
+}
+
+pub enum Color {
+    Red,
+    Green,
+}
+
+pub type Pair = (i32, i32);
+
+pub const MAX: u32 = 10;
+
+static GREETING: &str = "hi";
 
 pub trait Greeter {
     fn greet(&self) -> String;
 }
 
 impl Greeter for Point {
-    fn greet(&self) -> String { String::new() }
+    fn greet(&self) -> String {
+        String::new()
+    }
 }
 
-const MAX: u32 = 10;
+impl Point {
+    fn x(&self) -> i32 {
+        self.x
+    }
+}
 
 fn main() {
     let _ = util::run();
 }
 "#;
 
+    fn extract(src: &str) -> Extraction {
+        let x = RustExtractor;
+        let tree = compass_extract::parse(&x.grammar(), src.as_bytes()).expect("parse");
+        x.extract(src.as_bytes(), &tree)
+    }
+
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
     #[test]
-    fn extracts_symbols_and_mod_imports() {
-        let rust = RustExtractor;
-        let grammar = rust.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = rust.extract(SAMPLE.as_bytes(), &tree);
-
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("util", SymbolKind::Module)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Point", SymbolKind::Struct)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Color", SymbolKind::Enum)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Interface)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("greet", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("MAX", SymbolKind::Constant)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("main", SymbolKind::Function)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("helper", SymbolKind::Function)),
-            "{by_name:?}"
-        );
+        got.sort();
+        let mut want = vec![
+            // `mod foo;` / `mod foo { .. }` declarations are Module symbols.
+            ("util".to_string(), Module),
+            ("missing".to_string(), Module),
+            ("inline".to_string(), Module),
+            // A `fn` inside an inline module is a free Function (not a Method).
+            ("helper".to_string(), Function),
+            // struct / union both map to Struct; enum to Enum.
+            ("Point".to_string(), Struct),
+            ("Bits".to_string(), Struct),
+            ("Color".to_string(), Enum),
+            // type alias -> Other.
+            ("Pair".to_string(), Other),
+            // const and static both map to Constant.
+            ("MAX".to_string(), Constant),
+            ("GREETING".to_string(), Constant),
+            // trait -> Interface; its required fn is a Method (trait body counts as impl).
+            ("Greeter".to_string(), Interface),
+            ("greet".to_string(), Method),
+            // an inherent-impl fn is also a Method.
+            ("x".to_string(), Method),
+            // a free top-level fn is a Function.
+            ("main".to_string(), Function),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        // `mod util;` is a file import; the inline `mod inline { .. }` is not.
-        assert_eq!(specs, vec!["util"], "{specs:?}");
+        // Only file-backed `mod foo;` declarations are imports, in source order; the inline
+        // `mod inline { .. }` and the `use` statement are not.
+        assert_eq!(specs, ["util", "missing"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // `src/lib.rs` is a module root, so its submodules resolve in the same dir (`src/`).
+        let ctx = MockResolutionContext::new()
+            .current("src/lib.rs", "")
+            .file("src/util.rs")
+            .file("src/parser/mod.rs");
+        let imports = [raw("util"), raw("parser"), raw("missing")];
+        let resolved = RustExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        // `mod util;` -> src/util.rs
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/util.rs"))
+            }
+            other => panic!("`mod util;` should resolve to src/util.rs, got {other:?}"),
+        }
+        // `mod parser;` -> src/parser/mod.rs (the `foo/mod.rs` candidate)
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/parser/mod.rs"))
+            }
+            other => panic!("`mod parser;` should resolve to src/parser/mod.rs, got {other:?}"),
+        }
+        // `mod missing;` -> no .rs file. Rust only ever produces Resolved or Unresolved for
+        // `mod` declarations (they cannot point out-of-repo), so a missing one is Unresolved.
+        assert!(
+            matches!(resolved[2], ResolvedImport::Unresolved { .. }),
+            "`mod missing;` resolves to no file, got {:?}",
+            resolved[2]
+        );
+    }
+
+    #[test]
+    fn resolve_nests_submodules_of_a_non_root_file() {
+        // A non-(lib/main/mod) file nests its submodules under `<stem>/`.
+        let ctx = MockResolutionContext::new()
+            .current("src/parser.rs", "")
+            .file("src/parser/lexer.rs");
+        let resolved = RustExtractor.resolve(&[raw("lexer")], &ctx, &LangConfig);
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/parser/lexer.rs"))
+            }
+            other => panic!("`mod lexer;` should resolve under src/parser/, got {other:?}"),
+        }
     }
 
     #[test]

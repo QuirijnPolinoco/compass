@@ -172,59 +172,128 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Function, Interface, Method, Other, Struct};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
     const SAMPLE: &str = r#"
 package demo
 
 import (
-    "fmt"
-    "example.com/demo/util"
+	"fmt"
+	"example.com/demo/util"
+	"github.com/x/y"
 )
 
+type ID int
+
 type Greeter interface {
-    Greet() string
+	Greet() string
 }
 
 type Person struct {
-    Name string
+	Name string
 }
 
 const Version = "1.0"
 
 func (p Person) Greet() string {
-    return fmt.Sprintf("hi %s", p.Name)
+	return fmt.Sprintf("hi %s", p.Name)
+}
+
+func (p *Person) SetName(n string) {
+	p.Name = n
+}
+
+func New() Person {
+	return Person{}
 }
 
 func main() {
-    util.Run()
+	util.Run()
 }
 "#;
 
-    #[test]
-    fn extracts_symbols_and_imports() {
+    fn extract(src: &str) -> Extraction {
         let go = GoExtractor;
-        let grammar = go.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = go.extract(SAMPLE.as_bytes(), &tree);
+        let tree = compass_extract::parse(&go.grammar(), src.as_bytes()).expect("parse");
+        go.extract(src.as_bytes(), &tree)
+    }
 
-        let names: Vec<&str> = extraction.symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(
-            names.contains(&"Greeter"),
-            "interface symbol, got {names:?}"
-        );
-        assert!(names.contains(&"Person"), "struct symbol, got {names:?}");
-        assert!(names.contains(&"Greet"), "method symbol, got {names:?}");
-        assert!(names.contains(&"main"), "function symbol, got {names:?}");
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
 
-        let specs: Vec<&str> = extraction
-            .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+    #[test]
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
+            .symbols
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(specs.contains(&"fmt"), "stdlib import, got {specs:?}");
+        got.sort();
+        let mut want = vec![
+            ("Greet".to_string(), Method),
+            ("Greeter".to_string(), Interface),
+            ("ID".to_string(), Other),
+            ("New".to_string(), Function),
+            ("Person".to_string(), Struct),
+            ("SetName".to_string(), Method),
+            ("main".to_string(), Function),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
+            .imports
+            .into_iter()
+            .map(|i| i.specifier)
+            .collect();
+        assert_eq!(specs, ["fmt", "example.com/demo/util", "github.com/x/y"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        let ctx = MockResolutionContext::new()
+            .disk("go.mod", "module example.com/demo\n\ngo 1.22\n")
+            .current("main.go", "package main\n")
+            .file("util/util.go");
+        let imports = [
+            raw("fmt"),
+            raw("example.com/demo/util"),
+            raw("github.com/x/y"),
+            raw("example.com/demo/missing"),
+        ];
+        let resolved = GoExtractor.resolve(&imports, &ctx, &LangConfig);
+
         assert!(
-            specs.contains(&"example.com/demo/util"),
-            "internal import, got {specs:?}"
+            matches!(resolved[0], ResolvedImport::External { .. }),
+            "fmt is stdlib"
+        );
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("util/util.go"))
+            }
+            other => panic!("internal import should resolve, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[2], ResolvedImport::External { .. }),
+            "third-party module path"
+        );
+        assert!(
+            matches!(resolved[3], ResolvedImport::Unresolved { .. }),
+            "internal pkg with no files is broken"
         );
     }
 

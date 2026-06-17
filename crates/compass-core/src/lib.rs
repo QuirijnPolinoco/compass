@@ -48,7 +48,7 @@ pub struct File {
     pub content_hash: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SymbolKind {
     Function,
     Method,

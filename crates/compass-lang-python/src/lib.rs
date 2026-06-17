@@ -246,65 +246,141 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Function, Method};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    /// A rich sample: top-level + nested functions, two classes with methods (one of
+    /// which nests a plain function in its body), and imports of every shape the
+    /// extractor records — plain, aliased, absolute-from, and relative-from.
     const SAMPLE: &str = r#"
 import os
 import a.b as ab
 from pkg.mod_a import helper
 from . import sibling
+from .sib import z
 from ..util import thing
+
 
 class Greeter:
     def greet(self):
         def inner():
             return 1
+
         return inner()
+
+    def shout(self):
+        return "HI"
+
+
+class Repository:
+    def fetch(self):
+        return None
+
 
 def main():
     pass
+
+
+def make_adder(n):
+    def add(x):
+        return x + n
+
+    return add
 "#;
 
-    #[test]
-    fn extracts_symbols_and_imports() {
+    fn extract(src: &str) -> Extraction {
         let py = PythonExtractor;
-        let grammar = py.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = py.extract(SAMPLE.as_bytes(), &tree);
+        let tree = compass_extract::parse(&py.grammar(), src.as_bytes()).expect("parse");
+        py.extract(src.as_bytes(), &tree)
+    }
 
-        let mut by_name: Vec<(&str, SymbolKind)> = extraction
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        by_name.sort_by_key(|(n, _)| *n);
+        got.sort();
+        let mut want = vec![
+            ("Greeter".to_string(), Class),
+            ("Repository".to_string(), Class),
+            // A `def` directly inside a class body is a Method.
+            ("greet".to_string(), Method),
+            ("shout".to_string(), Method),
+            ("fetch".to_string(), Method),
+            // A `def` nested in a method/function body is a plain Function.
+            ("inner".to_string(), Function),
+            ("add".to_string(), Function),
+            // Top-level `def`s are Functions.
+            ("main".to_string(), Function),
+            ("make_adder".to_string(), Function),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("greet", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("inner", SymbolKind::Function)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("main", SymbolKind::Function)),
-            "{by_name:?}"
-        );
-
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert!(specs.contains(&"os"), "{specs:?}");
-        assert!(specs.contains(&"a.b"), "{specs:?}");
-        assert!(specs.contains(&"pkg.mod_a"), "{specs:?}");
-        assert!(specs.contains(&"."), "{specs:?}");
-        assert!(specs.contains(&"..util"), "{specs:?}");
+        assert_eq!(specs, ["os", "a.b", "pkg.mod_a", ".", ".sib", "..util"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // resolve() reads no module source — only `current_file()` (for the relative
+        // base dir) and `file_by_path()` (the mapped resolution targets).
+        let ctx = MockResolutionContext::new()
+            .current("pkg/app.py", "")
+            .file("pkg/mod_a.py") // absolute `pkg.mod_a` -> pkg/mod_a.py
+            .file("pkg/__init__.py"); // relative `.` -> pkg/__init__.py
+        let imports = [
+            raw("os"),        // [0] absolute, not in repo  -> External (stdlib)
+            raw("pkg.mod_a"), // [1] absolute, in repo      -> Resolved
+            raw("."),         // [2] relative to current pkg -> Resolved (pkg/__init__.py)
+            raw(".sib"),      // [3] relative, missing file  -> Unresolved
+        ];
+        let resolved = PythonExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        assert!(
+            matches!(resolved[0], ResolvedImport::External { .. }),
+            "stdlib/absolute-not-in-repo is External, got {:?}",
+            resolved[0]
+        );
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("pkg/mod_a.py"))
+            }
+            other => panic!("absolute intra-repo import should resolve, got {other:?}"),
+        }
+        match &resolved[2] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("pkg/__init__.py"))
+            }
+            other => panic!("relative import to existing pkg should resolve, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[3], ResolvedImport::Unresolved { .. }),
+            "relative import resolving to no in-repo file is Unresolved, got {:?}",
+            resolved[3]
+        );
     }
 
     #[test]

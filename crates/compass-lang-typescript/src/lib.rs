@@ -221,18 +221,35 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method, Other};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    /// A rich sample exercising every symbol kind the extractor recognizes
+    /// (function + generator-function, class + abstract-class, interface, enum,
+    /// type alias -> Other, method) and several import flavours (relative,
+    /// bare/third-party, a re-export `from`, and a relative one that won't map).
     const SAMPLE: &str = r#"
 import { Helper } from "./util";
 import React from "react";
 export { reexported } from "./other";
+import missing from "./missing";
 
-export function main() {
+export function main(): number {
     return 1;
 }
 
+function* counter() {
+    yield 1;
+}
+
 export class Service {
-    run() {}
+    run(): void {}
+    stop(): void {}
+}
+
+abstract class Base {
+    handle(): void {}
 }
 
 interface Greeter {
@@ -240,49 +257,111 @@ interface Greeter {
 }
 
 enum Color { Red, Green }
+
+type Id = string;
 "#;
 
+    fn extract(src: &str) -> Extraction {
+        let x = TypeScriptExtractor;
+        let tree = compass_extract::parse(&x.grammar(), src.as_bytes()).expect("parse");
+        x.extract(src.as_bytes(), &tree)
+    }
+
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
     #[test]
-    fn extracts_symbols_and_imports() {
-        let ts = TypeScriptExtractor;
-        let grammar = ts.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = ts.extract(SAMPLE.as_bytes(), &tree);
-
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("main", SymbolKind::Function)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Service", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("run", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Interface)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Color", SymbolKind::Enum)),
-            "{by_name:?}"
-        );
+        got.sort();
 
-        let specs: Vec<&str> = extraction
+        let mut want: Vec<(String, SymbolKind)> = vec![
+            ("main".to_string(), Function),
+            ("counter".to_string(), Function), // generator_function_declaration
+            ("Service".to_string(), Class),
+            ("run".to_string(), Method),
+            ("stop".to_string(), Method),
+            ("Base".to_string(), Class), // abstract_class_declaration
+            ("handle".to_string(), Method),
+            ("Greeter".to_string(), Interface),
+            ("Color".to_string(), Enum),
+            ("Id".to_string(), Other), // type_alias_declaration
+        ];
+        want.sort();
+
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert!(specs.contains(&"./util"), "{specs:?}");
-        assert!(specs.contains(&"react"), "{specs:?}");
-        assert!(specs.contains(&"./other"), "{specs:?}");
+        assert_eq!(specs, ["./util", "react", "./other", "./missing"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // `resolve()` uses `file_by_path` only; the importing file lives in `src/`.
+        let ctx = MockResolutionContext::new()
+            .current("src/main.ts", "")
+            .file("src/util.ts"); // resolution target for `./util` (extension fallback)
+
+        let imports = [
+            raw("react"),     // [0] bare specifier -> External (node_modules)
+            raw("./util"),    // [1] relative, maps to src/util.ts -> Resolved
+            raw("./missing"), // [2] relative, no mapped file -> External (asset, not broken)
+        ];
+        let resolved = TypeScriptExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        assert!(
+            matches!(resolved[0], ResolvedImport::External { .. }),
+            "bare specifier should be External, got {:?}",
+            resolved[0]
+        );
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/util.ts"))
+            }
+            other => panic!("expected Resolved for ./util, got {other:?}"),
+        }
+        // This language never emits Unresolved: an unmapped relative import is treated
+        // as External (it may point at a non-code asset) rather than a broken import.
+        assert!(
+            matches!(resolved[2], ResolvedImport::External { .. }),
+            "unmapped relative import should be External, got {:?}",
+            resolved[2]
+        );
+    }
+
+    #[test]
+    fn resolve_uses_index_fallback() {
+        // `./widgets` with no `widgets.ts` should still resolve to `widgets/index.ts`.
+        let ctx = MockResolutionContext::new()
+            .current("src/app.ts", "")
+            .file("src/widgets/index.ts");
+        let resolved = TypeScriptExtractor.resolve(&[raw("./widgets")], &ctx, &LangConfig);
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/widgets/index.ts"))
+            }
+            other => panic!("expected index.ts fallback Resolved, got {other:?}"),
+        }
     }
 
     #[test]

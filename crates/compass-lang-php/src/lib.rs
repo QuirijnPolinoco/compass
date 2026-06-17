@@ -184,13 +184,26 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    // A rich sample: every class-like kind PHP extracts (class, interface, trait, enum),
+    // methods (including an abstract interface method) and a free function, plus several
+    // include/require imports of different shapes. Only a single-quoted literal (a `string`
+    // node) is extracted as an import: the `use` statement is skipped (PSR-4 autoload, not a
+    // file dependency), a double-quoted `"..."` (an `encapsed_string`) is skipped, and the
+    // `__DIR__ . '...'` concat include is skipped (the `string` is nested under a
+    // `binary_expression`, not a direct child).
     const SAMPLE: &str = r#"<?php
 namespace App;
 
 use App\Util\Helper;
 
 require_once 'util.php';
+include 'lib/helpers.php';
+require_once "skipped.php";
+require __DIR__ . '/dynamic.php';
 
 class Greeter {
     public function greet(): string {
@@ -204,56 +217,115 @@ interface Speaker {
 
 trait Loud {}
 
+enum Suit {
+    case Hearts;
+    case Spades;
+}
+
 function main(): void {
     echo (new Greeter())->greet();
 }
 "#;
 
-    #[test]
-    fn extracts_symbols_and_includes() {
+    fn extract(src: &str) -> Extraction {
         let php = PhpExtractor;
-        let grammar = php.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = php.extract(SAMPLE.as_bytes(), &tree);
+        let tree = compass_extract::parse(&php.grammar(), src.as_bytes()).expect("parse");
+        php.extract(src.as_bytes(), &tree)
+    }
 
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Speaker", SymbolKind::Interface)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("greet", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("main", SymbolKind::Function)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Loud", SymbolKind::Class)),
-            "{by_name:?}"
-        );
+        got.sort();
+        // A trait is extracted as Class (PHP interfaces are separate). The `enum` cases
+        // are not declarations, so only `Suit` itself appears. The abstract interface
+        // method `speak` is a `method_declaration`, so it is extracted like `greet`.
+        let mut want = vec![
+            ("Greeter".to_string(), Class),
+            ("Loud".to_string(), Class),
+            ("Speaker".to_string(), Interface),
+            ("Suit".to_string(), Enum),
+            ("greet".to_string(), Method),
+            ("main".to_string(), Function),
+            ("speak".to_string(), Method),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        // Only literal include/require produces an import; `use` is skipped (PSR-4).
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        // Only single-quoted literal include/require (+`_once`) produce imports, in source
+        // order. `use` is skipped (PSR-4); the double-quoted `"skipped.php"` is an
+        // `encapsed_string` (not a `string`) so it is skipped; and the `__DIR__ . '...'`
+        // concat include is skipped (its `string` is nested under a `binary_expression`).
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert_eq!(specs, vec!["util.php"], "{specs:?}");
+        assert_eq!(specs, ["util.php", "lib/helpers.php"]);
+    }
+
+    #[test]
+    fn resolve_classifies_internal_and_external() {
+        // The importing file is index.php at the repo root, so relative includes resolve
+        // against the repo root. PHP never emits Unresolved: a missing include is External
+        // (include_path semantics are too flexible to call it broken).
+        let ctx = MockResolutionContext::new()
+            .current("index.php", "<?php\n")
+            .file("util.php")
+            .file("lib/helpers.php");
+        let imports = [
+            raw("util.php"),         // resolves to util.php (already .php)
+            raw("lib/helpers"),      // resolves to lib/helpers.php (.php appended)
+            raw("missing/gone.php"), // not mapped -> External, not broken
+        ];
+        let resolved = PhpExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => assert_eq!(*target, ctx.id_of("util.php")),
+            other => panic!("expected Resolved util.php, got {other:?}"),
+        }
+        match &resolved[1] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("lib/helpers.php"))
+            }
+            other => panic!("expected Resolved lib/helpers.php, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[2], ResolvedImport::External { .. }),
+            "missing include is External, not Unresolved: {:?}",
+            resolved[2]
+        );
     }
 
     #[test]
     fn resolve_path_collapses_segments() {
         assert_eq!(resolve_path("", "util.php"), "util.php");
         assert_eq!(resolve_path("a", "./inc/x.php"), "a/inc/x.php");
+        assert_eq!(resolve_path("a/b", "../x.php"), "a/x.php");
+    }
+
+    #[test]
+    fn parent_dir_drops_filename() {
+        assert_eq!(parent_dir("src/index.php"), "src");
+        assert_eq!(parent_dir("index.php"), "");
     }
 }

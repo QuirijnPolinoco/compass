@@ -268,14 +268,26 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method};
+    use compass_extract::testing::MockResolutionContext;
+    use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
+    // A rich sample exercising every symbol kind the extractor distinguishes
+    // (class / interface / enum / object / top-level fn / member fn) plus imports
+    // of every shape it recognizes: internal single-symbol, wildcard, stdlib, and
+    // third-party.
     const SAMPLE: &str = r#"
 package com.example.app
 
 import com.example.util.Helper
+import com.example.util.Logger
+import com.example.model.*
+import kotlin.collections.List
+import com.acme.thirdparty.Widget
 
 class Greeter {
     fun greet(): String { return "hi" }
+    fun shout(): String { return "HI" }
 }
 
 interface Speaker {
@@ -291,51 +303,143 @@ object Singleton {
 fun main() {
     println(Helper())
 }
+
+fun helper() {}
 "#;
 
+    fn extract(src: &str) -> Extraction {
+        let x = KotlinExtractor;
+        let tree = compass_extract::parse(&x.grammar(), src.as_bytes()).expect("parse");
+        x.extract(src.as_bytes(), &tree)
+    }
+
+    fn raw(specifier: &str) -> RawImport {
+        RawImport {
+            specifier: specifier.to_string(),
+            span: Span {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                start_col: 0,
+            },
+        }
+    }
+
     #[test]
-    fn extracts_symbols_and_imports() {
-        let kt = KotlinExtractor;
-        let grammar = kt.grammar();
-        let tree = compass_extract::parse(&grammar, SAMPLE.as_bytes()).expect("parse");
-        let extraction = kt.extract(SAMPLE.as_bytes(), &tree);
-
-        let by_name: Vec<(&str, SymbolKind)> = extraction
+    fn extracts_exactly_the_expected_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(SAMPLE)
             .symbols
-            .iter()
-            .map(|s| (s.name.as_str(), s.kind))
+            .into_iter()
+            .map(|s| (s.name, s.kind))
             .collect();
-        assert!(
-            by_name.contains(&("Greeter", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Speaker", SymbolKind::Interface)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Color", SymbolKind::Enum)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("Singleton", SymbolKind::Class)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("greet", SymbolKind::Method)),
-            "{by_name:?}"
-        );
-        assert!(
-            by_name.contains(&("main", SymbolKind::Function)),
-            "{by_name:?}"
-        );
+        got.sort();
+        // Note: enum entries (RED, GREEN) are not declarations, so they are not
+        // extracted; `object` declarations map to Class; functions are Method inside
+        // a class/interface/object and Function at top level.
+        let mut want = vec![
+            ("Color".to_string(), Enum),
+            ("Greeter".to_string(), Class),
+            ("Singleton".to_string(), Class),
+            ("Speaker".to_string(), Interface),
+            ("greet".to_string(), Method),
+            ("helper".to_string(), Function),
+            ("main".to_string(), Function),
+            ("run".to_string(), Method),
+            ("shout".to_string(), Method),
+            ("speak".to_string(), Method),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+    }
 
-        let specs: Vec<&str> = extraction
+    #[test]
+    fn extracts_all_imports_in_order() {
+        let specs: Vec<String> = extract(SAMPLE)
             .imports
-            .iter()
-            .map(|i| i.specifier.as_str())
+            .into_iter()
+            .map(|i| i.specifier)
             .collect();
-        assert!(specs.contains(&"com.example.util.Helper"), "{specs:?}");
+        assert_eq!(
+            specs,
+            [
+                "com.example.util.Helper",
+                "com.example.util.Logger",
+                "com.example.model.*",
+                "kotlin.collections.List",
+                "com.acme.thirdparty.Widget",
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_classifies_internal_external_and_broken() {
+        // resolve() re-reads the current file for its `package` line to find the source
+        // root: with `package com.example.app`, the dir `src/com/example/app` yields
+        // source root `src`, so `import a.b.C` maps to `src/a/b/C.kt`.
+        let ctx = MockResolutionContext::new()
+            .current("src/com/example/app/Main.kt", "package com.example.app\n")
+            .file("src/com/example/util/Helper.kt");
+        let imports = [
+            raw("com.example.util.Helper"),  // internal -> Resolved
+            raw("kotlin.collections.List"),  // stdlib -> External
+            raw("com.example.util.Missing"), // internal-looking but absent -> External
+        ];
+        let resolved = KotlinExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/com/example/util/Helper.kt"))
+            }
+            other => panic!("internal import should resolve, got {other:?}"),
+        }
+        assert!(
+            matches!(resolved[1], ResolvedImport::External { .. }),
+            "stdlib import is external, got {:?}",
+            resolved[1]
+        );
+        // Kotlin never flags broken imports: an unresolved-but-internal-looking import
+        // is treated as External, never Unresolved (see module docs).
+        assert!(
+            matches!(resolved[2], ResolvedImport::External { .. }),
+            "absent target is treated as external (never Unresolved), got {:?}",
+            resolved[2]
+        );
+        assert!(
+            !resolved
+                .iter()
+                .any(|r| matches!(r, ResolvedImport::Unresolved { .. })),
+            "this language produces no Unresolved imports"
+        );
+    }
+
+    #[test]
+    fn resolve_handles_wildcard_imports() {
+        // `import a.b.*` resolves to every mapped file in dir `src/a/b`; an empty dir
+        // falls back to External.
+        let ctx = MockResolutionContext::new()
+            .current("src/com/example/app/Main.kt", "package com.example.app\n")
+            .file("src/com/example/model/User.kt")
+            .file("src/com/example/model/Order.kt");
+        let imports = [
+            raw("com.example.model.*"), // expands to the two mapped files
+            raw("com.example.empty.*"), // no files in dir -> External
+        ];
+        let resolved = KotlinExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        let resolved_targets: Vec<_> = resolved
+            .iter()
+            .filter_map(|r| match r {
+                ResolvedImport::Resolved { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(resolved_targets.len(), 2, "wildcard expands to both files");
+        assert!(resolved_targets.contains(&ctx.id_of("src/com/example/model/User.kt")));
+        assert!(resolved_targets.contains(&ctx.id_of("src/com/example/model/Order.kt")));
+        assert!(
+            matches!(resolved.last(), Some(ResolvedImport::External { .. })),
+            "empty wildcard dir is external"
+        );
     }
 
     #[test]
