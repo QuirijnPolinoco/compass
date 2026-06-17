@@ -23,5 +23,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-csharp")]
     registry.register(Box::new(mapai_lang_csharp::CSharpExtractor));
 
+    #[cfg(feature = "lang-typescript")]
+    registry.register(Box::new(mapai_lang_typescript::TypeScriptExtractor));
+
     registry
 }

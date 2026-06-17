@@ -23,6 +23,10 @@ fn fixture_csharp() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-csharp")
 }
 
+fn fixture_ts() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-ts")
+}
+
 #[test]
 fn overview_of_go_fixture() {
     let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
@@ -97,6 +101,24 @@ fn overview_of_csharp_fixture() {
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
     assert!(stdout.contains("csharp"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn overview_of_typescript_fixture() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("overview")
+        .arg(fixture_ts())
+        .output()
+        .expect("run mapai");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // 2 .ts files; `import { helper } from "./util"` resolves to one edge.
+    assert!(stdout.contains("files:        2"), "stdout:\n{stdout}");
+    assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
+    assert!(stdout.contains("typescript"), "stdout:\n{stdout}");
 }
 
 /// Drive a real MCP handshake over stdio and confirm the `overview` tool returns the map.
