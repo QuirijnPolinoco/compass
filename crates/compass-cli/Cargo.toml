@@ -16,6 +16,8 @@ compass-core.workspace = true
 compass-extract.workspace = true
 compass-engine.workspace = true
 compass-mcp.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
 # Language crates are optional + feature-gated; the composition root selects them.
 compass-lang-go = { path = "../compass-lang-go", optional = true }
 compass-lang-python = { path = "../compass-lang-python", optional = true }

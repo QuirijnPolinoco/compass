@@ -15,9 +15,23 @@ useful on its own to a human, too.
 - **Model-agnostic** — it speaks MCP, so it works with any assistant (Claude, Gemini,
   ChatGPT, …) without integrating with any of them.
 
-> **Status:** early but functional. The core engine, the MCP server, all Tier 1 languages,
-> and live re-mapping (`compass watch`) work and are tested. Prebuilt v0.1.0 binaries are on
-> the [releases page](https://github.com/QuirijnPolinoco/Compass/releases).
+> **Status:** early but functional. The core engine, the MCP server, 10 languages, and live
+> re-mapping (`compass watch`) work and are tested. Prebuilt binaries are on the
+> [releases page](https://github.com/QuirijnPolinoco/Compass/releases).
+
+## Quick start
+
+```sh
+# 1. Install (one time)
+cargo install --path crates/compass-cli      # or grab a binary from Releases
+
+# 2. In your project — build the map AND enable your AI assistant, in one step:
+compass init
+```
+
+`compass init` indexes the repo (creating `.compass/`, or refreshing it if it already
+exists) and writes a `.mcp.json` so any MCP-capable assistant (Claude Code, …) uses Compass
+automatically. It's idempotent — re-run it anytime.
 
 ## Supported languages
 
@@ -58,6 +72,9 @@ cargo build --release
 ## Usage
 
 ```sh
+# Set up a repo in one step: build the map + enable MCP (start here)
+compass init path/to/repo
+
 # A human-readable summary of the repo map
 compass overview path/to/repo
 
@@ -79,8 +96,8 @@ compass serve path/to/repo
 
 ### Using it from an AI assistant (MCP)
 
-Compass is an MCP server over stdio. Point your MCP-capable host at the `compass serve` command;
-for a host that uses a JSON config, the entry looks like:
+The easy way is `compass init` (above) — it writes the `.mcp.json` below for you. To wire it
+up by hand, Compass is an MCP server over stdio; for a host that uses a JSON config:
 
 ```json
 {

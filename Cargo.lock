@@ -109,6 +109,7 @@ dependencies = [
 name = "compass-cli"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "compass-core",
  "compass-engine",
  "compass-extract",
@@ -123,6 +124,7 @@ dependencies = [
  "compass-lang-rust",
  "compass-lang-typescript",
  "compass-mcp",
+ "serde_json",
 ]
 
 [[package]]

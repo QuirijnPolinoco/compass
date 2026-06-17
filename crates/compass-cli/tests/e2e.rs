@@ -11,6 +11,44 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture")
 }
 
+#[test]
+fn init_builds_map_and_writes_mcp_config() {
+    // Run against a throwaway project so we don't write .mcp.json into the repo.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("init-test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("init")
+        .arg(&dir)
+        .output()
+        .expect("run compass init");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        dir.join(".compass/graph.json").exists(),
+        "cache not written"
+    );
+    let mcp = std::fs::read_to_string(dir.join(".mcp.json")).expect(".mcp.json not written");
+    assert!(mcp.contains("\"compass\""), ".mcp.json:\n{mcp}");
+    assert!(mcp.contains("serve"), ".mcp.json:\n{mcp}");
+
+    // Idempotent: a second run succeeds too.
+    let again = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("init")
+        .arg(&dir)
+        .output()
+        .expect("re-run compass init");
+    assert!(again.status.success());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn fixture_py() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-py")
 }

@@ -19,6 +19,7 @@ fn main() -> ExitCode {
         .unwrap_or_else(|| PathBuf::from("."));
 
     match command {
+        "init" => run_init(&path),
         "overview" => run_overview(&path),
         "languages" => run_languages(),
         "deps" => run_deps(&path, args.get(2).map(String::as_str)),
@@ -47,6 +48,86 @@ fn build_graph(path: &Path) -> Option<Graph> {
             None
         }
     }
+}
+
+/// `compass init` — make a project Compass-ready in one step: build (or refresh) the map,
+/// and wire up MCP so an AI host auto-uses it. Idempotent — re-run anytime.
+fn run_init(path: &Path) -> ExitCode {
+    let Some(graph) = build_graph(path) else {
+        return ExitCode::FAILURE;
+    };
+    if let Err(e) = compass_engine::cache::save(path, &graph) {
+        eprintln!("compass: warning: could not write cache: {e:#}");
+    }
+    let overview = graph.overview();
+
+    match write_mcp_config(path) {
+        Ok(created) => println!(
+            "compass: {} .mcp.json (registers the 'compass' MCP server for this repo)",
+            if created { "created" } else { "updated" }
+        ),
+        Err(e) => eprintln!("compass: warning: could not write .mcp.json: {e:#}"),
+    }
+
+    println!(
+        "compass: mapped {} files, {} symbols, {} import edges ({} diagnostics).",
+        overview.file_count,
+        overview.symbol_count,
+        overview.import_edge_count,
+        overview.diagnostic_count
+    );
+    println!("Ready — an MCP-capable assistant will use Compass in this repo.");
+    println!("Tip: `compass watch` keeps the map fresh as you edit.");
+    ExitCode::SUCCESS
+}
+
+/// Create or update a project `.mcp.json` so MCP hosts launch `compass serve` for this
+/// repo, merging with any existing config (preserving other servers). Returns whether the
+/// file was newly created.
+fn write_mcp_config(path: &Path) -> anyhow::Result<bool> {
+    use serde_json::{json, Value};
+
+    let mcp_path = path.join(".mcp.json");
+    let existed = mcp_path.exists();
+
+    // Point at THIS binary and the absolute project path, so it works regardless of the
+    // host's PATH or working directory.
+    let exe = clean_path(&std::env::current_exe()?);
+    let project = clean_path(&std::fs::canonicalize(path)?);
+    let server = json!({ "command": exe, "args": ["serve", project] });
+
+    let mut root: Value = if existed {
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path)?).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    if !root.is_object() {
+        root = json!({});
+    }
+    let servers = root
+        .as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}));
+    if !servers.is_object() {
+        *servers = json!({});
+    }
+    servers
+        .as_object_mut()
+        .unwrap()
+        .insert("compass".to_string(), server);
+
+    std::fs::write(
+        &mcp_path,
+        format!("{}\n", serde_json::to_string_pretty(&root)?),
+    )?;
+    Ok(!existed)
+}
+
+/// Absolute path as a clean forward-slash string (strips Windows `\\?\` verbatim prefix).
+fn clean_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/")
 }
 
 fn run_overview(path: &Path) -> ExitCode {
@@ -189,6 +270,7 @@ fn run_serve(path: &Path) -> ExitCode {
 fn print_help() {
     println!("compass — map a codebase into a queryable graph\n");
     println!("USAGE:");
+    println!("  compass init [PATH]        Set up a repo: build the map + enable MCP (start here)");
     println!("  compass overview [PATH]    Summarize the repo map (default: current dir)");
     println!("  compass deps [PATH] <FILE> Show what a file imports and what imports it");
     println!("  compass broken [PATH]      List imports that point at missing files");
