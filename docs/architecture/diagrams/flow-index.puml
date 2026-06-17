@@ -1,15 +1,15 @@
 @startuml flow-index
 ' Embedded in docs/architecture/02-architecture.md — §6 Key flows (Flow A)
-title Initial index — MapAI (two-phase extractor)
+title Initial index — Compass (two-phase extractor)
 
 actor Developer as dev
-participant "CLI\n(mapai-cli)" as cli
-participant "Engine\n(mapai-engine)" as engine
-participant "Extractor\n(mapai-extract + lang-*)" as ext
-participant "Core graph\n(mapai-core)" as core
-database "Cache\n(.mapai/)" as cache
+participant "CLI\n(compass-cli)" as cli
+participant "Engine\n(compass-engine)" as engine
+participant "Extractor\n(compass-extract + lang-*)" as ext
+participant "Core graph\n(compass-core)" as core
+database "Cache\n(.compass/)" as cache
 
-dev -> cli : mapai (run in repo)
+dev -> cli : compass (run in repo)
 cli -> engine : build full index
 engine -> engine : walk (respect .gitignore)\n+ detect language from registry
 

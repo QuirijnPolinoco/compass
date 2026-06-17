@@ -1,4 +1,4 @@
-# Requirements — MapAI
+# Requirements — Compass
 
 > Status: **CONFIRMED** by Quinn at the design-review gate (2026-06-17), after an
 > independent architecture review.
@@ -20,7 +20,7 @@
 
 | Role | Who they are | What they need to do |
 |------|--------------|----------------------|
-| AI-assistant user | Dev who wants their assistant to navigate accurately | Run MapAI in a repo; point their MCP-capable assistant at it |
+| AI-assistant user | Dev who wants their assistant to navigate accurately | Run Compass in a repo; point their MCP-capable assistant at it |
 | Human explorer | New joiner, returning solo dev, code reviewer | Read the map to understand structure and dependencies — with or without AI |
 | Language contributor | OSS contributor adding a language | Implement one extractor against a stable interface, ship it without touching core |
 
@@ -104,5 +104,5 @@ IDs map to the epics/stories in `ProjectInfo.md`. Priority is MoSCoW from the sp
   HTTP transport is deferred. ✅ *confirmed 2026-06-17.*
 - **A-4:** "Human-readable overview" (FR-3/B1) is delivered initially as **CLI output**
   (e.g. a tree/summary command), not a GUI. ✅ *confirmed 2026-06-17.*
-- **A-5:** The map is held **in memory** with an on-disk cache under `.mapai/` for fast
+- **A-5:** The map is held **in memory** with an on-disk cache under `.compass/` for fast
   restart; not a database. ✅ *confirmed 2026-06-17.*

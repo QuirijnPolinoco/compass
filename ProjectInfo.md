@@ -1,16 +1,16 @@
-MapAI — Project Spec
+Compass — Project Spec
 
 A local-first repo-mapping MCP server.
 
 1. Project Description
 
-MapAI is a local-first tool that maps any codebase into a queryable graph and serves it to AI coding assistants over MCP (Model Context Protocol).
+Compass is a local-first tool that maps any codebase into a queryable graph and serves it to AI coding assistants over MCP (Model Context Protocol).
 
-Today, AI assistants waste tokens grepping through a whole repo to find the right files, and sometimes edit the wrong ones or invent paths that don't exist. MapAI gives both the human and the AI a shared, accurate map — what files exist, how they connect (imports, calls), and where the important logic lives — so the AI goes straight to the correct files.
+Today, AI assistants waste tokens grepping through a whole repo to find the right files, and sometimes edit the wrong ones or invent paths that don't exist. Compass gives both the human and the AI a shared, accurate map — what files exist, how they connect (imports, calls), and where the important logic lives — so the AI goes straight to the correct files.
 
 What makes it different
 
-Tools like this already exist (e.g. graphify), but they are heavy to set up — multiple installers, config flags, optional extras, per-platform steps. MapAI's core bet is radical simplicity: one command, zero config, one cross-platform binary, no API keys, code never leaves the machine.
+Tools like this already exist (e.g. graphify), but they are heavy to set up — multiple installers, config flags, optional extras, per-platform steps. Compass's core bet is radical simplicity: one command, zero config, one cross-platform binary, no API keys, code never leaves the machine.
 
 Who it's for
 
@@ -29,7 +29,7 @@ Parse each file locally with tree-sitter to extract symbols and imports.
 Build a graph (file → imports → file; symbol → calls → symbol).
 Expose the graph via an MCP server so any AI tool can query it.
 
-Because parsing is local and the AI only ever reads the output, MapAI works with any model — Claude, Gemini, ChatGPT, Grok, DeepSeek, Llama — without integrating with any of them individually.
+Because parsing is local and the AI only ever reads the output, Compass works with any model — Claude, Gemini, ChatGPT, Grok, DeepSeek, Llama — without integrating with any of them individually.
 
 Out of scope for v1
 
@@ -40,7 +40,7 @@ Cloud sync, dashboards, telemetry.
 
 Every future feature should make adding the next language easier, or add one.
 
-MapAI is architected around a pluggable language-extractor interface. Adding a language must be a self-contained unit of work that does not touch the core graph, the MCP layer, or any other language. Core code stays language-agnostic; languages are plugins behind a stable interface.
+Compass is architected around a pluggable language-extractor interface. Adding a language must be a self-contained unit of work that does not touch the core graph, the MCP layer, or any other language. Core code stays language-agnostic; languages are plugins behind a stable interface.
 
 This principle drives all architectural decisions. If a design choice makes adding language #16 harder, it's the wrong choice.
 

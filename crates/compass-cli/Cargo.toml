@@ -1,0 +1,42 @@
+[package]
+name = "compass-cli"
+description = "Compass — the `compass` binary and composition root."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "compass"
+path = "src/main.rs"
+
+[dependencies]
+compass-core.workspace = true
+compass-extract.workspace = true
+compass-engine.workspace = true
+compass-mcp.workspace = true
+# Language crates are optional + feature-gated; the composition root selects them.
+compass-lang-go = { path = "../compass-lang-go", optional = true }
+compass-lang-python = { path = "../compass-lang-python", optional = true }
+compass-lang-java = { path = "../compass-lang-java", optional = true }
+compass-lang-csharp = { path = "../compass-lang-csharp", optional = true }
+compass-lang-typescript = { path = "../compass-lang-typescript", optional = true }
+compass-lang-rust = { path = "../compass-lang-rust", optional = true }
+compass-lang-kotlin = { path = "../compass-lang-kotlin", optional = true }
+compass-lang-ruby = { path = "../compass-lang-ruby", optional = true }
+compass-lang-php = { path = "../compass-lang-php", optional = true }
+compass-lang-c = { path = "../compass-lang-c", optional = true }
+
+[features]
+default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust", "lang-kotlin", "lang-ruby", "lang-php", "lang-c"]
+lang-go = ["dep:compass-lang-go"]
+lang-python = ["dep:compass-lang-python"]
+lang-java = ["dep:compass-lang-java"]
+lang-csharp = ["dep:compass-lang-csharp"]
+lang-typescript = ["dep:compass-lang-typescript"]
+lang-rust = ["dep:compass-lang-rust"]
+lang-kotlin = ["dep:compass-lang-kotlin"]
+lang-ruby = ["dep:compass-lang-ruby"]
+lang-php = ["dep:compass-lang-php"]
+lang-c = ["dep:compass-lang-c"]

@@ -1,39 +1,39 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/mapai-core",
-    "crates/mapai-extract",
-    "crates/mapai-engine",
-    "crates/mapai-mcp",
-    "crates/mapai-cli",
-    "crates/mapai-lang-go",
-    "crates/mapai-lang-python",
-    "crates/mapai-lang-java",
-    "crates/mapai-lang-csharp",
-    "crates/mapai-lang-typescript",
-    "crates/mapai-lang-rust",
-    "crates/mapai-lang-kotlin",
-    "crates/mapai-lang-ruby",
-    "crates/mapai-lang-php",
-    "crates/mapai-lang-c",
+    "crates/compass-core",
+    "crates/compass-extract",
+    "crates/compass-engine",
+    "crates/compass-mcp",
+    "crates/compass-cli",
+    "crates/compass-lang-go",
+    "crates/compass-lang-python",
+    "crates/compass-lang-java",
+    "crates/compass-lang-csharp",
+    "crates/compass-lang-typescript",
+    "crates/compass-lang-rust",
+    "crates/compass-lang-kotlin",
+    "crates/compass-lang-ruby",
+    "crates/compass-lang-php",
+    "crates/compass-lang-c",
 ]
 # The new-language skeleton is intentionally NOT a workspace member: it must never
 # link into the binary, register a fake language, or gate `cargo build --workspace`.
-exclude = ["crates/mapai-lang-template"]
+exclude = ["crates/compass-lang-template"]
 
 [workspace.package]
 version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/QuirijnVanDerZanden/MapAI"
+repository = "https://github.com/QuirijnVanDerZanden/Compass"
 rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal crates (path-linked; versions tracked together)
-mapai-core = { path = "crates/mapai-core" }
-mapai-extract = { path = "crates/mapai-extract" }
-mapai-engine = { path = "crates/mapai-engine" }
-mapai-mcp = { path = "crates/mapai-mcp" }
+compass-core = { path = "crates/compass-core" }
+compass-extract = { path = "crates/compass-extract" }
+compass-engine = { path = "crates/compass-engine" }
+compass-mcp = { path = "crates/compass-mcp" }
 
 # Shared external deps — pinned ONCE here so versions can't drift across crates.
 # tree-sitter + grammars are added per the crate that needs them via `cargo add`

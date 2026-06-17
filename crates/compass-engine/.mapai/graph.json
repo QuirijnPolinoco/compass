@@ -1,0 +1,525 @@
+{
+  "version": 1,
+  "graph": {
+    "files": [
+      {
+        "id": 0,
+        "path": "src/cache.rs",
+        "language": "rust",
+        "content_hash": 990488764240990082
+      },
+      {
+        "id": 1,
+        "path": "src/index.rs",
+        "language": "rust",
+        "content_hash": 16259177246042196394
+      },
+      {
+        "id": 2,
+        "path": "src/lib.rs",
+        "language": "rust",
+        "content_hash": 8706843488710307012
+      },
+      {
+        "id": 3,
+        "path": "src/walk.rs",
+        "language": "rust",
+        "content_hash": 7851600119197144269
+      },
+      {
+        "id": 4,
+        "path": "src/watch.rs",
+        "language": "rust",
+        "content_hash": 16847891528059094034
+      }
+    ],
+    "symbols": [
+      {
+        "id": 0,
+        "name": "CACHE_FORMAT_VERSION",
+        "kind": "Constant",
+        "file": 0,
+        "span": {
+          "start_byte": 354,
+          "end_byte": 374,
+          "start_row": 9,
+          "start_col": 10
+        }
+      },
+      {
+        "id": 1,
+        "name": "CACHE_DIR",
+        "kind": "Constant",
+        "file": 0,
+        "span": {
+          "start_byte": 392,
+          "end_byte": 401,
+          "start_row": 11,
+          "start_col": 6
+        }
+      },
+      {
+        "id": 2,
+        "name": "CACHE_FILE",
+        "kind": "Constant",
+        "file": 0,
+        "span": {
+          "start_byte": 426,
+          "end_byte": 436,
+          "start_row": 12,
+          "start_col": 6
+        }
+      },
+      {
+        "id": 3,
+        "name": "CacheOut",
+        "kind": "Struct",
+        "file": 0,
+        "span": {
+          "start_byte": 488,
+          "end_byte": 496,
+          "start_row": 15,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 4,
+        "name": "CacheIn",
+        "kind": "Struct",
+        "file": 0,
+        "span": {
+          "start_byte": 576,
+          "end_byte": 583,
+          "start_row": 21,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 5,
+        "name": "save",
+        "kind": "Function",
+        "file": 0,
+        "span": {
+          "start_byte": 688,
+          "end_byte": 692,
+          "start_row": 27,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 6,
+        "name": "load",
+        "kind": "Function",
+        "file": 0,
+        "span": {
+          "start_byte": 1181,
+          "end_byte": 1185,
+          "start_row": 40,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 7,
+        "name": "Parsed",
+        "kind": "Struct",
+        "file": 1,
+        "span": {
+          "start_byte": 578,
+          "end_byte": 584,
+          "start_row": 16,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 8,
+        "name": "index",
+        "kind": "Function",
+        "file": 1,
+        "span": {
+          "start_byte": 801,
+          "end_byte": 806,
+          "start_row": 25,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 9,
+        "name": "parse_one",
+        "kind": "Function",
+        "file": 1,
+        "span": {
+          "start_byte": 2998,
+          "end_byte": 3007,
+          "start_row": 89,
+          "start_col": 3
+        }
+      },
+      {
+        "id": 10,
+        "name": "content_hash",
+        "kind": "Function",
+        "file": 1,
+        "span": {
+          "start_byte": 3520,
+          "end_byte": 3532,
+          "start_row": 104,
+          "start_col": 3
+        }
+      },
+      {
+        "id": 11,
+        "name": "RepoContext",
+        "kind": "Struct",
+        "file": 1,
+        "span": {
+          "start_byte": 3866,
+          "end_byte": 3877,
+          "start_row": 113,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 12,
+        "name": "repo_root",
+        "kind": "Method",
+        "file": 1,
+        "span": {
+          "start_byte": 4081,
+          "end_byte": 4090,
+          "start_row": 121,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 13,
+        "name": "current_file",
+        "kind": "Method",
+        "file": 1,
+        "span": {
+          "start_byte": 4145,
+          "end_byte": 4157,
+          "start_row": 124,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 14,
+        "name": "file_by_path",
+        "kind": "Method",
+        "file": 1,
+        "span": {
+          "start_byte": 4216,
+          "end_byte": 4228,
+          "start_row": 127,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 15,
+        "name": "files_in_dir",
+        "kind": "Method",
+        "file": 1,
+        "span": {
+          "start_byte": 4320,
+          "end_byte": 4332,
+          "start_row": 130,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 16,
+        "name": "cache",
+        "kind": "Module",
+        "file": 2,
+        "span": {
+          "start_byte": 368,
+          "end_byte": 373,
+          "start_row": 6,
+          "start_col": 8
+        }
+      },
+      {
+        "id": 17,
+        "name": "index",
+        "kind": "Module",
+        "file": 2,
+        "span": {
+          "start_byte": 383,
+          "end_byte": 388,
+          "start_row": 7,
+          "start_col": 8
+        }
+      },
+      {
+        "id": 18,
+        "name": "walk",
+        "kind": "Module",
+        "file": 2,
+        "span": {
+          "start_byte": 398,
+          "end_byte": 402,
+          "start_row": 8,
+          "start_col": 8
+        }
+      },
+      {
+        "id": 19,
+        "name": "watch",
+        "kind": "Module",
+        "file": 2,
+        "span": {
+          "start_byte": 412,
+          "end_byte": 417,
+          "start_row": 9,
+          "start_col": 8
+        }
+      },
+      {
+        "id": 20,
+        "name": "Walked",
+        "kind": "Struct",
+        "file": 3,
+        "span": {
+          "start_byte": 458,
+          "end_byte": 464,
+          "start_row": 8,
+          "start_col": 11
+        }
+      },
+      {
+        "id": 21,
+        "name": "walk",
+        "kind": "Function",
+        "file": 3,
+        "span": {
+          "start_byte": 596,
+          "end_byte": 600,
+          "start_row": 14,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 22,
+        "name": "normalize",
+        "kind": "Function",
+        "file": 3,
+        "span": {
+          "start_byte": 1212,
+          "end_byte": 1221,
+          "start_row": 32,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 23,
+        "name": "parent_dir",
+        "kind": "Function",
+        "file": 3,
+        "span": {
+          "start_byte": 1513,
+          "end_byte": 1523,
+          "start_row": 42,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 24,
+        "name": "IGNORED_DIRS",
+        "kind": "Constant",
+        "file": 4,
+        "span": {
+          "start_byte": 593,
+          "end_byte": 605,
+          "start_row": 14,
+          "start_col": 6
+        }
+      },
+      {
+        "id": 25,
+        "name": "watch",
+        "kind": "Function",
+        "file": 4,
+        "span": {
+          "start_byte": 812,
+          "end_byte": 817,
+          "start_row": 18,
+          "start_col": 7
+        }
+      },
+      {
+        "id": 26,
+        "name": "is_ignored",
+        "kind": "Function",
+        "file": 4,
+        "span": {
+          "start_byte": 1449,
+          "end_byte": 1459,
+          "start_row": 41,
+          "start_col": 3
+        }
+      },
+      {
+        "id": 27,
+        "name": "tests",
+        "kind": "Module",
+        "file": 4,
+        "span": {
+          "start_byte": 1664,
+          "end_byte": 1669,
+          "start_row": 51,
+          "start_col": 4
+        }
+      },
+      {
+        "id": 28,
+        "name": "ignores_cache_vcs_and_build_paths",
+        "kind": "Function",
+        "file": 4,
+        "span": {
+          "start_byte": 1710,
+          "end_byte": 1743,
+          "start_row": 55,
+          "start_col": 7
+        }
+      }
+    ],
+    "imports": [
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ]
+    ],
+    "defines": [
+      [
+        0,
+        0
+      ],
+      [
+        0,
+        1
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        0,
+        3
+      ],
+      [
+        0,
+        4
+      ],
+      [
+        0,
+        5
+      ],
+      [
+        0,
+        6
+      ],
+      [
+        1,
+        7
+      ],
+      [
+        1,
+        8
+      ],
+      [
+        1,
+        9
+      ],
+      [
+        1,
+        10
+      ],
+      [
+        1,
+        11
+      ],
+      [
+        1,
+        12
+      ],
+      [
+        1,
+        13
+      ],
+      [
+        1,
+        14
+      ],
+      [
+        1,
+        15
+      ],
+      [
+        2,
+        16
+      ],
+      [
+        2,
+        17
+      ],
+      [
+        2,
+        18
+      ],
+      [
+        2,
+        19
+      ],
+      [
+        3,
+        20
+      ],
+      [
+        3,
+        21
+      ],
+      [
+        3,
+        22
+      ],
+      [
+        3,
+        23
+      ],
+      [
+        4,
+        24
+      ],
+      [
+        4,
+        25
+      ],
+      [
+        4,
+        26
+      ],
+      [
+        4,
+        27
+      ],
+      [
+        4,
+        28
+      ]
+    ],
+    "calls": [],
+    "diagnostics": []
+  }
+}

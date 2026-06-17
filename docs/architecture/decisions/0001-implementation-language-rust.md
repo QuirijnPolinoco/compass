@@ -6,7 +6,7 @@
 
 ## Context
 
-MapAI must satisfy two requirements that the product itself flags as decisive:
+Compass must satisfy two requirements that the product itself flags as decisive:
 
 - **FR-2 / A2 (hard Must):** ship as **one cross-platform binary** that runs identically on
   Windows/Mac/Linux — the "radical simplicity" differentiator versus heavier tools.
@@ -17,7 +17,7 @@ North Star (FR-8 / H1) — a pluggable per-language extractor interface that out
 contributors can extend.
 
 A key clarification framed the decision: **the implementation language is independent of
-the languages MapAI can map.** tree-sitter is a C library with grammars for every target
+the languages Compass can map.** tree-sitter is a C library with grammars for every target
 language, so Python, Rust, Go, and Java can all parse all targets equally — target-language
 **coverage is not a differentiator** and was not scored.
 
@@ -32,7 +32,7 @@ The user's initial preference was **Python**.
 > - `ast-grep` is a live proof point: Rust + tree-sitter + bundled grammars shipping a
 >   single native binary at monorepo scale.
 > - Python: no cross-compilation in PyInstaller/Nuitka and native tree-sitter wheels are
->   per-OS/arch → cannot produce one cross-platform binary (best fallback: `uvx mapai`);
+>   per-OS/arch → cannot produce one cross-platform binary (best fallback: `uvx compass`);
 >   GIL forces multiprocessing for parallel parsing.
 > - Go: produces a single static binary, but its only production-grade tree-sitter binding
 >   requires **CGO**, which breaks Go's clean cross-compile (fragile per-target C-toolchain
@@ -67,7 +67,7 @@ whose remaining gap is driven entirely by performance-at-scale.
 
 ## Decision
 
-**Implement MapAI in Rust.**
+**Implement Compass in Rust.**
 
 Even with the single-binary requirement relaxed, Rust remained the top-scored option, and
 the user elected to take the highest-ceiling foundation: a genuine dependency-free single

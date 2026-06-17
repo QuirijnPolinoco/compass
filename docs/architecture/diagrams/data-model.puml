@@ -1,6 +1,6 @@
 @startuml data-model
 ' Embedded in docs/architecture/02-architecture.md — §5 Data model
-title Graph model — MapAI (owned by mapai-core)
+title Graph model — Compass (owned by compass-core)
 
 class File {
   path : repo-relative

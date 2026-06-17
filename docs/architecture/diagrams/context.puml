@@ -1,22 +1,22 @@
 @startuml context
 ' Embedded in docs/architecture/02-architecture.md — §2 System context (C4 L1)
 !include <C4/C4_Context>
-title System Context — MapAI
+title System Context — Compass
 
-Person(dev, "Developer", "Wants to understand a codebase; runs MapAI from the CLI")
+Person(dev, "Developer", "Wants to understand a codebase; runs Compass from the CLI")
 Person(ai, "AI Assistant / MCP host", "Any model — Claude, Gemini, ChatGPT, Grok, DeepSeek, Llama")
 
-System(mapai, "MapAI", "Local-first repo-mapping MCP server (single Rust binary). Maps a repo into a queryable graph and serves it over MCP")
+System(compass, "Compass", "Local-first repo-mapping MCP server (single Rust binary). Maps a repo into a queryable graph and serves it over MCP")
 
 System_Ext(repo, "Codebase on disk", "The repository being mapped")
 System_Ext(ts, "tree-sitter grammars", "C parsing grammars compiled into the binary")
 
-Rel(dev, mapai, "Runs in a repo; reads the overview", "CLI")
-Rel(ai, mapai, "Queries the map for the right files", "MCP / stdio")
-Rel(mapai, repo, "Reads files (respects .gitignore); never executes them")
-Rel(mapai, ts, "Parses files locally with")
+Rel(dev, compass, "Runs in a repo; reads the overview", "CLI")
+Rel(ai, compass, "Queries the map for the right files", "MCP / stdio")
+Rel(compass, repo, "Reads files (respects .gitignore); never executes them")
+Rel(compass, ts, "Parses files locally with")
 
-note bottom of mapai
+note bottom of compass
   No network calls. No model-provider integration.
   Speaks MCP only, so it works with every model.
   Code never leaves the machine.

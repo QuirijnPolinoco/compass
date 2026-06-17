@@ -1,5 +1,5 @@
 pub fn run() {
-    println!("hello from mapai");
+    println!("hello from compass");
 }
 
 pub struct Helper;

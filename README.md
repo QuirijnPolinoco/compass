@@ -1,10 +1,10 @@
-# MapAI
+# Compass
 
 **A local-first tool that maps any codebase into a queryable graph — and serves it to AI
 coding assistants over [MCP](https://modelcontextprotocol.io).**
 
 AI assistants waste tokens grepping a whole repo to find the right files, and sometimes
-edit the wrong ones or invent paths that don't exist. MapAI gives the human *and* the AI a
+edit the wrong ones or invent paths that don't exist. Compass gives the human *and* the AI a
 shared, accurate map — what files exist, how they connect (imports), and where the
 important logic lives — so the assistant goes straight to the right files. The map is
 useful on its own to a human, too.
@@ -16,8 +16,8 @@ useful on its own to a human, too.
   ChatGPT, …) without integrating with any of them.
 
 > **Status:** early but functional. The core engine, the MCP server, all Tier 1 languages,
-> and live re-mapping (`mapai watch`) work and are tested. Prebuilt v0.1.0 binaries are on
-> the [releases page](https://github.com/QuirijnPolinoco/MapAI/releases).
+> and live re-mapping (`compass watch`) work and are tested. Prebuilt v0.1.0 binaries are on
+> the [releases page](https://github.com/QuirijnPolinoco/Compass/releases).
 
 ## Supported languages
 
@@ -29,19 +29,19 @@ Adding a language is a self-contained unit of work behind a stable interface —
 
 ## Install
 
-**Recommended — download a prebuilt binary.** MapAI is a single self-contained executable:
+**Recommended — download a prebuilt binary.** Compass is a single self-contained executable:
 no runtime, no dependencies. Grab the one for your platform from the
-[latest release](https://github.com/QuirijnPolinoco/MapAI/releases/latest), unpack it, and
-put `mapai` on your `PATH`:
+[latest release](https://github.com/QuirijnPolinoco/Compass/releases/latest), unpack it, and
+put `compass` on your `PATH`:
 
 | Platform | Asset |
 |----------|-------|
-| Linux (x86-64) | `mapai-x86_64-unknown-linux-gnu.tar.gz` (or `-musl` for a fully static build) |
-| macOS (Apple Silicon) | `mapai-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `mapai-x86_64-apple-darwin.tar.gz` |
-| Windows (x86-64) | `mapai-x86_64-pc-windows-msvc.zip` |
+| Linux (x86-64) | `compass-x86_64-unknown-linux-gnu.tar.gz` (or `-musl` for a fully static build) |
+| macOS (Apple Silicon) | `compass-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `compass-x86_64-apple-darwin.tar.gz` |
+| Windows (x86-64) | `compass-x86_64-pc-windows-msvc.zip` |
 
-Then run `mapai overview .` in any repository. (A `brew` / `scoop` / `cargo-binstall`
+Then run `compass overview .` in any repository. (A `brew` / `scoop` / `cargo-binstall`
 one-liner is on the roadmap.)
 
 ## Build from source
@@ -52,41 +52,41 @@ Linux/macOS).
 
 ```sh
 cargo build --release
-# binary at target/release/mapai
+# binary at target/release/compass
 ```
 
 ## Usage
 
 ```sh
 # A human-readable summary of the repo map
-mapai overview path/to/repo
+compass overview path/to/repo
 
 # What a file imports, and what imports it
-mapai deps path/to/repo src/main.go
+compass deps path/to/repo src/main.go
 
 # Imports that point at files that don't exist
-mapai broken path/to/repo
+compass broken path/to/repo
 
 # Keep the map fresh automatically as you edit (Ctrl+C to stop)
-mapai watch path/to/repo
+compass watch path/to/repo
 
 # Which languages this build supports
-mapai languages
+compass languages
 
 # Run the MCP server over stdio (for an AI host to connect to)
-mapai serve path/to/repo
+compass serve path/to/repo
 ```
 
 ### Using it from an AI assistant (MCP)
 
-MapAI is an MCP server over stdio. Point your MCP-capable host at the `mapai serve` command;
+Compass is an MCP server over stdio. Point your MCP-capable host at the `compass serve` command;
 for a host that uses a JSON config, the entry looks like:
 
 ```json
 {
   "mcpServers": {
-    "mapai": {
-      "command": "mapai",
+    "compass": {
+      "command": "compass",
       "args": ["serve", "path/to/repo"]
     }
   }
@@ -117,7 +117,7 @@ language behind a stable `Extractor` trait — is documented in
 
 Contributions — especially new languages — are very welcome. Start with
 [CONTRIBUTING.md](CONTRIBUTING.md): it covers the repo layout, the living-docs rule, and a
-step-by-step checklist for adding a language (copy `crates/mapai-lang-template/` and fill
+step-by-step checklist for adding a language (copy `crates/compass-lang-template/` and fill
 in the TODOs).
 
 ## License

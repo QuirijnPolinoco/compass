@@ -1,0 +1,12 @@
+[package]
+name = "compass-extract"
+description = "Compass — the stable Extractor trait, tree-sitter harness, and language registry."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+compass-core.workspace = true
+tree-sitter.workspace = true

@@ -8,7 +8,7 @@
 
 [ADR-0002](0002-pluggable-language-extractor-architecture.md) chose one crate per language,
 compiled in behind cargo features. Something must collect the compiled-in `Extractor`s into
-the registry the engine and `supported_languages` (FR-14/H2) read. Because MapAI is a single
+the registry the engine and `supported_languages` (FR-14/H2) read. Because Compass is a single
 static binary, this happens at **compile time**, not via runtime discovery.
 
 The attractive-looking option is **automatic self-registration** via a distributed slice
@@ -31,8 +31,8 @@ assembled with no central edit.
    exports `pub fn register(reg: &mut Registry)`; the CLI calls it behind the feature cfg:
    ```rust
    fn register_all(reg: &mut Registry) {
-       #[cfg(feature = "lang-go")]     mapai_lang_go::register(reg);
-       #[cfg(feature = "lang-python")] mapai_lang_python::register(reg);
+       #[cfg(feature = "lang-go")]     compass_lang_go::register(reg);
+       #[cfg(feature = "lang-python")] compass_lang_python::register(reg);
        // …one line per language…
    }
    ```
@@ -40,7 +40,7 @@ assembled with no central edit.
 
 ## Decision
 
-Use **Option 3: an explicit `cfg`-gated `register_all()`** in `mapai-cli` as the v1 default.
+Use **Option 3: an explicit `cfg`-gated `register_all()`** in `compass-cli` as the v1 default.
 
 This keeps the **same single shared edit per language** the design already sanctions (one
 feature line + one `register()` line, both in the composition root — neither in core/engine/

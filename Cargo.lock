@@ -106,6 +106,168 @@ dependencies = [
 ]
 
 [[package]]
+name = "compass-cli"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-engine",
+ "compass-extract",
+ "compass-lang-c",
+ "compass-lang-csharp",
+ "compass-lang-go",
+ "compass-lang-java",
+ "compass-lang-kotlin",
+ "compass-lang-php",
+ "compass-lang-python",
+ "compass-lang-ruby",
+ "compass-lang-rust",
+ "compass-lang-typescript",
+ "compass-mcp",
+]
+
+[[package]]
+name = "compass-core"
+version = "0.3.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "compass-engine"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "compass-core",
+ "compass-extract",
+ "ignore",
+ "notify-debouncer-mini",
+ "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "compass-extract"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "tree-sitter",
+]
+
+[[package]]
+name = "compass-lang-c"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-c",
+]
+
+[[package]]
+name = "compass-lang-csharp"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+]
+
+[[package]]
+name = "compass-lang-go"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-go",
+]
+
+[[package]]
+name = "compass-lang-java"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-java",
+]
+
+[[package]]
+name = "compass-lang-kotlin"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-kotlin-ng",
+]
+
+[[package]]
+name = "compass-lang-php"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-php",
+]
+
+[[package]]
+name = "compass-lang-python"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-python",
+]
+
+[[package]]
+name = "compass-lang-ruby"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-ruby",
+]
+
+[[package]]
+name = "compass-lang-rust"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-rust",
+]
+
+[[package]]
+name = "compass-lang-typescript"
+version = "0.3.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-typescript",
+]
+
+[[package]]
+name = "compass-mcp"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "compass-core",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,168 +666,6 @@ name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
-
-[[package]]
-name = "mapai-cli"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-engine",
- "mapai-extract",
- "mapai-lang-c",
- "mapai-lang-csharp",
- "mapai-lang-go",
- "mapai-lang-java",
- "mapai-lang-kotlin",
- "mapai-lang-php",
- "mapai-lang-python",
- "mapai-lang-ruby",
- "mapai-lang-rust",
- "mapai-lang-typescript",
- "mapai-mcp",
-]
-
-[[package]]
-name = "mapai-core"
-version = "0.3.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "mapai-engine"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "ignore",
- "mapai-core",
- "mapai-extract",
- "notify-debouncer-mini",
- "rayon",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "mapai-extract"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "tree-sitter",
-]
-
-[[package]]
-name = "mapai-lang-c"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-c",
-]
-
-[[package]]
-name = "mapai-lang-csharp"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-c-sharp",
-]
-
-[[package]]
-name = "mapai-lang-go"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-go",
-]
-
-[[package]]
-name = "mapai-lang-java"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-java",
-]
-
-[[package]]
-name = "mapai-lang-kotlin"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-kotlin-ng",
-]
-
-[[package]]
-name = "mapai-lang-php"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-php",
-]
-
-[[package]]
-name = "mapai-lang-python"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-python",
-]
-
-[[package]]
-name = "mapai-lang-ruby"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-ruby",
-]
-
-[[package]]
-name = "mapai-lang-rust"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-rust",
-]
-
-[[package]]
-name = "mapai-lang-typescript"
-version = "0.3.0"
-dependencies = [
- "mapai-core",
- "mapai-extract",
- "tree-sitter",
- "tree-sitter-typescript",
-]
-
-[[package]]
-name = "mapai-mcp"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "mapai-core",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "memchr"

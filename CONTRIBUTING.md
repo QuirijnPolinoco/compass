@@ -1,4 +1,4 @@
-# Contributing to MapAI
+# Contributing to Compass
 
 Thanks for helping map the world's codebases. This document is the **project rulebook** —
 how the repo is organized, how docs stay trustworthy, how commits look, and how to add a
@@ -17,7 +17,7 @@ Read it once; it's short on purpose.
    touch the core graph, the MCP layer, or any other language. If a change makes adding the
    *next* language harder, it's the wrong change. (See
    [`docs/architecture/decisions/0002-…`](docs/architecture/decisions/0002-pluggable-language-extractor-architecture.md).)
-3. **The core stays language-agnostic.** `mapai-core` and `mapai-mcp` never learn about a
+3. **The core stays language-agnostic.** `compass-core` and `compass-mcp` never learn about a
    specific language.
 
 ---
@@ -29,13 +29,13 @@ reach across boundaries.
 
 | Folder / crate | What goes here | What must NOT go here |
 |----------------|----------------|------------------------|
-| `crates/mapai-core` | Graph model, node/edge types, `LanguageId`, `Diagnostic`, query engine + query port | Anything language-specific; anything about MCP, tree-sitter, or walking |
-| `crates/mapai-extract` | The stable `Extractor` trait (`extract` + `resolve`), tree-sitter harness, `RawImport`, `ResolutionContext`, `Detection`, registry | Logic for a particular language |
-| `crates/mapai-engine` | Orchestration as modules: `walk` (+ `.gitignore` + detection), `index`, `cache`, `config` (`watch` is post-v1) | Per-language parsing/resolution rules; MCP logic |
-| `crates/mapai-mcp` | MCP server + tool definitions + `schemars` DTOs | Knowledge of any specific language; the engine (it depends on core's query port only) |
-| `crates/mapai-cli` | The `mapai` binary + composition root: `register_all()` + which languages compile in | Business logic that belongs in a library crate |
-| `crates/mapai-lang-<name>` | **Everything** for one language: detection, grammar, extraction, import resolution, **plus its own `tests/fixtures/` + snapshot tests** | Any reference to another `mapai-lang-*` crate |
-| `crates/mapai-lang-template` | Copy-paste skeleton for a new language (excluded from the workspace) | Real language logic |
+| `crates/compass-core` | Graph model, node/edge types, `LanguageId`, `Diagnostic`, query engine + query port | Anything language-specific; anything about MCP, tree-sitter, or walking |
+| `crates/compass-extract` | The stable `Extractor` trait (`extract` + `resolve`), tree-sitter harness, `RawImport`, `ResolutionContext`, `Detection`, registry | Logic for a particular language |
+| `crates/compass-engine` | Orchestration as modules: `walk` (+ `.gitignore` + detection), `index`, `cache`, `config` (`watch` is post-v1) | Per-language parsing/resolution rules; MCP logic |
+| `crates/compass-mcp` | MCP server + tool definitions + `schemars` DTOs | Knowledge of any specific language; the engine (it depends on core's query port only) |
+| `crates/compass-cli` | The `compass` binary + composition root: `register_all()` + which languages compile in | Business logic that belongs in a library crate |
+| `crates/compass-lang-<name>` | **Everything** for one language: detection, grammar, extraction, import resolution, **plus its own `tests/fixtures/` + snapshot tests** | Any reference to another `compass-lang-*` crate |
+| `crates/compass-lang-template` | Copy-paste skeleton for a new language (excluded from the workspace) | Real language logic |
 | `tests/e2e` | The single cross-crate smoke test (walk → graph → MCP overview) | Per-language fixtures (those live in each lang crate) |
 | `docs/architecture` | Requirements, architecture, ADRs, diagrams | — |
 
@@ -62,8 +62,8 @@ an issue and ask. Asking is always welcome.
 A language counts as **supported** only when **all** of these are true. This is also your
 PR checklist:
 
-- [ ] **Crate** — created `crates/mapai-lang-<name>/` (start by copying
-      `crates/mapai-lang-template/`).
+- [ ] **Crate** — created `crates/compass-lang-<name>/` (start by copying
+      `crates/compass-lang-template/`).
 - [ ] **Detection** — declared `Detection { extensions, shebangs }`; the walker picks it up
       from the registry (don't edit the walker).
 - [ ] **Parsing (`extract`)** — the tree-sitter grammar is wired in and symbols (functions,
@@ -74,11 +74,11 @@ PR checklist:
 - [ ] **Graph output** — produces the **same** node/edge shape as every other language (no
       downstream special-casing).
 - [ ] **Fixtures + tests** — a sample project + `insta` snapshot tests **inside the crate**
-      at `crates/mapai-lang-<name>/tests/`, asserting the expected nodes and edges.
+      at `crates/compass-lang-<name>/tests/`, asserting the expected nodes and edges.
 - [ ] **No core changes** — implemented entirely behind the `Extractor` interface;
-      `mapai-core`, `mapai-engine`, and `mapai-mcp` untouched, and no other language crate
+      `compass-core`, `compass-engine`, and `compass-mcp` untouched, and no other language crate
       referenced. The only shared edits allowed are in the **composition root**: the optional
-      dependency + `lang-<name>` feature in `crates/mapai-cli/Cargo.toml`, and one
+      dependency + `lang-<name>` feature in `crates/compass-cli/Cargo.toml`, and one
       `register()` line in `register_all()`.
 - [ ] **Docs** — added to the supported-languages list and the roadmap updated.
 
@@ -92,7 +92,7 @@ PR checklist:
 
 - **Format:** `cargo fmt` (CI enforces it).
 - **Lint:** `cargo clippy --all-targets -- -D warnings` must pass.
-- **Test:** `cargo test`. For a single language, `cargo test -p mapai-lang-<name>` compiles
+- **Test:** `cargo test`. For a single language, `cargo test -p compass-lang-<name>` compiles
   and tests just that one grammar.
 - **No panics on input.** A malformed source file must produce a recorded error and let the
   index continue — never `unwrap()` on parsed content.
