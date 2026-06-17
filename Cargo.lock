@@ -480,6 +480,8 @@ dependencies = [
  "anyhow",
  "mapai-core",
  "rmcp",
+ "schemars",
+ "serde",
  "serde_json",
  "tokio",
 ]

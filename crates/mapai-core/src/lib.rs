@@ -182,6 +182,11 @@ impl Graph {
         self.by_path.get(path).copied()
     }
 
+    /// The repo-relative path of a file node.
+    pub fn file_path(&self, id: FileId) -> Option<&Path> {
+        self.files.get(id.0 as usize).map(|f| f.path.as_path())
+    }
+
     /// Rebuild transient indices after deserializing from cache.
     pub fn reindex(&mut self) {
         self.by_path = self.files.iter().map(|f| (f.path.clone(), f.id)).collect();
@@ -192,6 +197,11 @@ impl Graph {
 /// (ADR-0002 / architecture §4). The concrete graph implements it.
 pub trait MapQuery {
     fn overview(&self) -> Overview;
+    /// What `file` imports, and what imports it (FR-10/B2). `file` is a repo-relative,
+    /// forward-slash path. Returns `None` if the file isn't in the map.
+    fn file_dependencies(&self, file: &str) -> Option<FileDependencies>;
+    /// Imports that point at no real file — mistakes to catch early (FR-12/D2).
+    fn broken_imports(&self) -> Vec<BrokenImport>;
 }
 
 /// A high-level summary of the map (FR-3/B1, the `overview` MCP tool).
@@ -208,6 +218,23 @@ pub struct Overview {
 pub struct LanguageStat {
     pub language: LanguageId,
     pub file_count: usize,
+}
+
+/// What a file depends on and what depends on it (FR-10/B2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDependencies {
+    pub file: String,
+    /// Files this file imports.
+    pub dependencies: Vec<String>,
+    /// Files that import this file.
+    pub dependents: Vec<String>,
+}
+
+/// An import that resolved to no real file (FR-12/D2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokenImport {
+    pub file: String,
+    pub message: String,
 }
 
 impl MapQuery for Graph {
@@ -235,5 +262,49 @@ impl MapQuery for Graph {
             diagnostic_count: self.diagnostics.len(),
             languages,
         }
+    }
+
+    fn file_dependencies(&self, file: &str) -> Option<FileDependencies> {
+        let fid = self.file_id(Path::new(file))?;
+
+        let mut dependencies: Vec<String> = self
+            .imports
+            .iter()
+            .filter(|(from, _)| *from == fid)
+            .filter_map(|(_, to)| self.file_path(*to))
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        dependencies.sort();
+        dependencies.dedup();
+
+        let mut dependents: Vec<String> = self
+            .imports
+            .iter()
+            .filter(|(_, to)| *to == fid)
+            .filter_map(|(from, _)| self.file_path(*from))
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        dependents.sort();
+        dependents.dedup();
+
+        Some(FileDependencies {
+            file: file.to_string(),
+            dependencies,
+            dependents,
+        })
+    }
+
+    fn broken_imports(&self) -> Vec<BrokenImport> {
+        self.diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagnosticKind::UnresolvedImport)
+            .filter_map(|d| {
+                let file = self.file_path(d.file)?.to_string_lossy().into_owned();
+                Some(BrokenImport {
+                    file,
+                    message: d.message.clone(),
+                })
+            })
+            .collect()
     }
 }

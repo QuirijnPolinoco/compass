@@ -1,26 +1,28 @@
 //! `mapai` — CLI entrypoint and composition root.
 //!
 //! Builds the language registry via the explicit [`registry::register_all`] (ADR-0003),
-//! runs the engine, and renders results. The MCP `serve` command is wired in the next slice.
+//! runs the engine, and renders results (or serves them over MCP).
 
 mod registry;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use mapai_core::MapQuery;
+use mapai_core::{Graph, MapQuery};
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    let command = args.next().unwrap_or_else(|| "overview".to_string());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = args.first().map(String::as_str).unwrap_or("overview");
     let path = args
-        .next()
+        .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    match command.as_str() {
+    match command {
         "overview" => run_overview(&path),
         "languages" => run_languages(),
+        "deps" => run_deps(&path, args.get(2).map(String::as_str)),
+        "broken" => run_broken(&path),
         "serve" => run_serve(&path),
         "help" | "-h" | "--help" => {
             print_help();
@@ -34,14 +36,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_overview(path: &Path) -> ExitCode {
+/// Index `path` with the compiled-in extractors, or print an error and return `None`.
+fn build_graph(path: &Path) -> Option<Graph> {
     let registry = registry::register_all();
-    let graph = match mapai_engine::index(path, &registry) {
-        Ok(graph) => graph,
+    match mapai_engine::index(path, &registry) {
+        Ok(graph) => Some(graph),
         Err(e) => {
             eprintln!("mapai: failed to index {}: {e:#}", path.display());
-            return ExitCode::FAILURE;
+            None
         }
+    }
+}
+
+fn run_overview(path: &Path) -> ExitCode {
+    let Some(graph) = build_graph(path) else {
+        return ExitCode::FAILURE;
     };
     if let Err(e) = mapai_engine::cache::save(path, &graph) {
         eprintln!("mapai: warning: could not write cache: {e:#}");
@@ -66,6 +75,50 @@ fn run_overview(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_deps(path: &Path, file: Option<&str>) -> ExitCode {
+    let Some(file) = file else {
+        eprintln!("usage: mapai deps <PATH> <FILE>   (FILE is repo-relative, e.g. src/main.go)");
+        return ExitCode::FAILURE;
+    };
+    let Some(graph) = build_graph(path) else {
+        return ExitCode::FAILURE;
+    };
+    match graph.file_dependencies(file) {
+        Some(deps) => {
+            println!("{}", deps.file);
+            println!("  depends on ({}):", deps.dependencies.len());
+            for dep in &deps.dependencies {
+                println!("    -> {dep}");
+            }
+            println!("  depended on by ({}):", deps.dependents.len());
+            for dep in &deps.dependents {
+                println!("    <- {dep}");
+            }
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("mapai: `{file}` is not in the map (use a repo-relative path)");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_broken(path: &Path) -> ExitCode {
+    let Some(graph) = build_graph(path) else {
+        return ExitCode::FAILURE;
+    };
+    let broken = graph.broken_imports();
+    if broken.is_empty() {
+        println!("No broken imports.");
+    } else {
+        println!("Broken imports ({}):", broken.len());
+        for b in &broken {
+            println!("  {} — {}", b.file, b.message);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_languages() -> ExitCode {
     let registry = registry::register_all();
     let ids = registry.language_ids();
@@ -77,13 +130,8 @@ fn run_languages() -> ExitCode {
 }
 
 fn run_serve(path: &Path) -> ExitCode {
-    let registry = registry::register_all();
-    let graph = match mapai_engine::index(path, &registry) {
-        Ok(graph) => graph,
-        Err(e) => {
-            eprintln!("mapai: failed to index {}: {e:#}", path.display());
-            return ExitCode::FAILURE;
-        }
+    let Some(graph) = build_graph(path) else {
+        return ExitCode::FAILURE;
     };
     let query: std::sync::Arc<dyn MapQuery + Send + Sync> = std::sync::Arc::new(graph);
     if let Err(e) = mapai_mcp::serve_stdio(query) {
@@ -97,6 +145,8 @@ fn print_help() {
     println!("mapai — map a codebase into a queryable graph\n");
     println!("USAGE:");
     println!("  mapai overview [PATH]    Summarize the repo map (default: current dir)");
+    println!("  mapai deps [PATH] <FILE> Show what a file imports and what imports it");
+    println!("  mapai broken [PATH]      List imports that point at missing files");
     println!("  mapai languages          List supported languages");
     println!("  mapai serve [PATH]       Run the MCP server over stdio (for AI hosts)");
     println!("  mapai help               Show this help");

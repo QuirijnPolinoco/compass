@@ -27,6 +27,31 @@ fn fixture_ts() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-ts")
 }
 
+fn fixture_broken() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
+}
+
+/// Run an MCP stdio session of newline-delimited JSON-RPC messages and return stdout.
+fn mcp_session(dir: PathBuf, messages: &[&str]) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("serve")
+        .arg(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mapai serve");
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin
+            .write_all(messages.join("\n").as_bytes())
+            .expect("write session");
+        stdin.write_all(b"\n").expect("write newline");
+    }
+    let output = child.wait_with_output().expect("wait for mapai serve");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[test]
 fn overview_of_go_fixture() {
     let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
@@ -119,6 +144,52 @@ fn overview_of_typescript_fixture() {
     assert!(stdout.contains("files:        2"), "stdout:\n{stdout}");
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("typescript"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn deps_of_go_main() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("deps")
+        .arg(fixture())
+        .arg("main.go")
+        .output()
+        .expect("run mapai");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "non-zero exit");
+    assert!(stdout.contains("-> util/util.go"), "stdout:\n{stdout}");
+    assert!(stdout.contains("depended on by (0)"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn broken_imports_are_reported() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mapai"))
+        .arg("broken")
+        .arg(fixture_broken())
+        .output()
+        .expect("run mapai");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "non-zero exit");
+    assert!(stdout.contains("Broken imports (1)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("missing"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn mcp_lists_tools_and_resolves_dependencies() {
+    let stdout = mcp_session(
+        fixture(),
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"file_dependencies","arguments":{"file":"main.go"}}}"#,
+        ],
+    );
+    // tools/list advertises all three tools.
+    assert!(stdout.contains("file_dependencies"), "stdout:\n{stdout}");
+    assert!(stdout.contains("broken_imports"), "stdout:\n{stdout}");
+    assert!(stdout.contains("overview"), "stdout:\n{stdout}");
+    // file_dependencies(main.go) resolves the internal import.
+    assert!(stdout.contains("util/util.go"), "stdout:\n{stdout}");
 }
 
 /// Drive a real MCP handshake over stdio and confirm the `overview` tool returns the map.
