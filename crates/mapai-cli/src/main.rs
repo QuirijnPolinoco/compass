@@ -21,6 +21,7 @@ fn main() -> ExitCode {
     match command.as_str() {
         "overview" => run_overview(&path),
         "languages" => run_languages(),
+        "serve" => run_serve(&path),
         "help" | "-h" | "--help" => {
             print_help();
             ExitCode::SUCCESS
@@ -75,10 +76,28 @@ fn run_languages() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_serve(path: &Path) -> ExitCode {
+    let registry = registry::register_all();
+    let graph = match mapai_engine::index(path, &registry) {
+        Ok(graph) => graph,
+        Err(e) => {
+            eprintln!("mapai: failed to index {}: {e:#}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let query: std::sync::Arc<dyn MapQuery + Send + Sync> = std::sync::Arc::new(graph);
+    if let Err(e) = mapai_mcp::serve_stdio(query) {
+        eprintln!("mapai: MCP server error: {e:#}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn print_help() {
     println!("mapai — map a codebase into a queryable graph\n");
     println!("USAGE:");
     println!("  mapai overview [PATH]    Summarize the repo map (default: current dir)");
     println!("  mapai languages          List supported languages");
+    println!("  mapai serve [PATH]       Run the MCP server over stdio (for AI hosts)");
     println!("  mapai help               Show this help");
 }

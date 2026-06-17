@@ -9,3 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 mapai-core.workspace = true
+rmcp = { version = "1.7.0", features = ["transport-io", "schemars"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "io-std"] }
+serde_json.workspace = true
+anyhow.workspace = true
