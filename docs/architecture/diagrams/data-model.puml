@@ -1,0 +1,27 @@
+@startuml data-model
+' Embedded in docs/architecture/02-architecture.md — §5 Data model
+title Graph model — MapAI (owned by mapai-core)
+
+class File {
+  path : repo-relative
+  language : LanguageId
+  content_hash
+}
+
+class Symbol {
+  name
+  kind : function | class | method | ...
+  span : source range
+}
+
+File "1" --> "many" Symbol : Defines
+File --> File : Imports\n(unresolved targets flagged)
+Symbol --> Symbol : Calls
+File ..> File : References\n(reserved: HTML/CSS links)
+
+note bottom
+  Every language emits the SAME node/edge shapes.
+  Nothing downstream special-cases a language.
+end note
+
+@enduml

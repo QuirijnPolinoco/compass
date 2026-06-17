@@ -1,0 +1,27 @@
+@startuml containers
+' Embedded in docs/architecture/02-architecture.md — §3 Containers (C4 L2)
+!include <C4/C4_Container>
+title Container diagram — MapAI (one binary)
+
+Person(dev, "Developer")
+Person(ai, "AI Assistant / MCP host")
+
+System_Boundary(mapai, "MapAI binary") {
+  Container(cli, "CLI", "Rust (mapai-cli)", "Zero-config entrypoint; prints overview; composition root")
+  Container(mcp, "MCP server", "Rust (mapai-mcp, rmcp)", "Exposes the map as MCP tools over stdio")
+  Container(watch, "Watcher (post-v1)", "Rust (engine::watch, notify)", "File events -> incremental reindex")
+  Container(engine, "Engine", "Rust (mapai-engine + mapai-core)", "walk -> detect -> parse -> extract -> assemble -> resolve -> query")
+  ContainerDb(cache, "Cache", ".mapai/ on disk", "Persisted graph, keyed by content hash")
+}
+
+System_Ext(repo, "Codebase on disk")
+
+Rel(dev, cli, "Runs", "shell")
+Rel(ai, mcp, "Queries", "MCP / stdio")
+Rel(cli, engine, "Builds / queries the map")
+Rel(mcp, engine, "Queries the map")
+Rel(watch, engine, "Triggers reparse of changed files")
+Rel(engine, repo, "Walks & reads (respects .gitignore)")
+Rel(engine, cache, "Reads / writes")
+
+@enduml

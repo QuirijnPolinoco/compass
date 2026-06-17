@@ -1,0 +1,35 @@
+@startuml flow-index
+' Embedded in docs/architecture/02-architecture.md — §6 Key flows (Flow A)
+title Initial index — MapAI (two-phase extractor)
+
+actor Developer as dev
+participant "CLI\n(mapai-cli)" as cli
+participant "Engine\n(mapai-engine)" as engine
+participant "Extractor\n(mapai-extract + lang-*)" as ext
+participant "Core graph\n(mapai-core)" as core
+database "Cache\n(.mapai/)" as cache
+
+dev -> cli : mapai (run in repo)
+cli -> engine : build full index
+engine -> engine : walk (respect .gitignore)\n+ detect language from registry
+
+== Phase 1 — per file, parallel (rayon) ==
+loop per file
+  engine -> ext : extract(file, tree)  [tree-sitter parse]
+  ext --> engine : symbols + raw imports
+  engine -> core : add File / Symbol nodes + Defines/Calls edges
+end
+
+engine -> engine : build ResolutionContext\n(read-only path -> FileId over all files)
+
+== Phase 2 — per file ==
+loop per file
+  engine -> ext : resolve(raw_imports, ctx, lang_config)
+  ext --> engine : resolved targets | Unresolved
+  engine -> core : add Imports edges\n(unresolved -> Diagnostic)
+end
+
+engine -> cache : write graph (versioned, content-hash keyed)
+cli --> dev : overview ready
+
+@enduml
