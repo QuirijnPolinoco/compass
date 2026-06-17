@@ -1,0 +1,15 @@
+# Rust build output
+/target
+**/*.rs.bk
+*.pdb
+
+# MapAI's per-repo cache/state (written into mapped repos)
+.mapai/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Note: Cargo.lock IS committed — MapAI ships as a binary, so we pin exact deps.

@@ -1,0 +1,11 @@
+[package]
+name = "mapai-mcp"
+description = "MapAI — MCP server exposing the map's query port over stdio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapai-core.workspace = true

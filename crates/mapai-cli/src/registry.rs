@@ -1,0 +1,18 @@
+//! The composition root's explicit, `cfg`-gated language registry (ADR-0003).
+//!
+//! This is the ONE place that names languages. Adding a language means an optional
+//! dependency plus a `lang-<name>` feature in `Cargo.toml`, and one `register(...)` line
+//! here. No linker-section magic, so a language can never silently vanish from the binary.
+
+use mapai_extract::Registry;
+
+/// Build the registry of all compiled-in language extractors.
+pub fn register_all() -> Registry {
+    #[allow(unused_mut)]
+    let mut registry = Registry::new();
+
+    #[cfg(feature = "lang-go")]
+    registry.register(Box::new(mapai_lang_go::GoExtractor));
+
+    registry
+}

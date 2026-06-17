@@ -1,0 +1,11 @@
+[package]
+name = "mapai-core"
+description = "MapAI — language-agnostic domain model: graph, diagnostics, query port."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
