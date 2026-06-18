@@ -96,13 +96,15 @@
     applyColors();
   }
 
-  function runLayout(randomize) {
+  // `fresh` (first load / topology change) lays out instantly and fits the viewport;
+  // live updates relax from current positions and keep the user's zoom/pan (in-place glide).
+  function runLayout(fresh) {
     if (layout) layout.stop();
     layout = cy.layout({
       name: "cose",
-      animate: true,
-      randomize: randomize,
-      fit: randomize,
+      animate: !fresh,
+      randomize: fresh,
+      fit: fresh,
       padding: 60,
       nodeRepulsion: 9000,
       idealEdgeLength: 70,
