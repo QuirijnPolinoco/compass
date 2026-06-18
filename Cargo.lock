@@ -136,6 +136,7 @@ dependencies = [
  "compass-lang-rust",
  "compass-lang-typescript",
  "compass-mcp",
+ "compass-viz",
  "serde_json",
 ]
 
