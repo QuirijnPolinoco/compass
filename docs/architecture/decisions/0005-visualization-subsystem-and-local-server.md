@@ -93,6 +93,21 @@ the same graph via cheap structured queries. So "for the AI" means new query ope
   files — FR-17/E1). These are language-agnostic graph queries; core owns the query engine (§4),
   so adding them touches core + its `Graph` impl and **no** `lang-*` crate. `compass-mcp` exposes
   `subgraph`/`shortest_path` as new tools; `compass-viz` consumes `graph_view`/`subgraph`.
+- **Node grouping is by detected community (graph structure), not by folder.** Nodes are
+  colored/clustered by **structural community detection** over the file import graph — files that
+  depend densely on each other form a group (a "sub-part of the project"), which is what a human
+  wants to see. This is chosen *because* repo conventions vary: it works whether the project is
+  organized **by feature** (groups ≈ folders) or **by type** (a controller→service→model feature
+  scattered across `controllers/`, `services/`, `models/` still groups together, because grouping
+  reads *edges, not paths*). The pass runs **server-side in `compass-core`, deterministically**
+  (label propagation with fixed node ordering — no RNG — so colors are stable across reloads); a
+  `graph_view` node carries a `group` id and an `is_hub` flag. **Hubs** (files imported across many
+  groups, e.g. shared utils) belong to no single group and render **neutral/gray** (matching the
+  gray central nodes in Obsidian's graph). The renderer offers **by-community (default)**, plus
+  **by-folder** and **by-language** as one-click alternate color modes (the data is already
+  present). *Limitation:* community detection is heuristic; on a degenerate graph it may
+  over-merge — acceptable for a visual aid, and the force layout still separates clusters
+  visually. Upgrade path: swap label propagation for Louvain/Leiden behind the same `group` field.
 
 ### Threat-model exception (the deliberate part)
 

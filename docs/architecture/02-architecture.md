@@ -132,6 +132,10 @@ a clean reindex, never a blind trust.
 neighborhood around a file), and the `shortest_path` result are **computed on demand** from the
 graph above — they add no new persisted entity and no new edge type. The visual map is just a
 `GraphView` rendered in the browser; the AI's cheap fetch is a `Subgraph` over the same data.
+Each `GraphView` file node also carries a **community `group` id** and an **`is_hub` flag** from a
+deterministic clustering pass (label propagation over the import graph) — see ADR-0005; this lets
+the UI color "sub-parts of the project" structurally rather than by folder, and is recomputed per
+`graph_view` call, never persisted.
 
 ## 6. Key flows
 
@@ -324,6 +328,10 @@ optional workspace dependency and `lang-<name>` feature in `compass-cli` + one l
   for the full picture and `subgraph` for focus mode — and owns its **Cytoscape element JSON** as
   its render schema (the browser analogue of `compass-mcp`'s wire DTOs). It binds `127.0.0.1`
   only, defaults to an uncommon high port with free-port fallback, and is read-only.
+- **Node grouping (ADR-0005):** the default coloring is by **detected community** (a deterministic
+  label-propagation pass over the import graph, computed in `compass-core`), so the map highlights
+  cohesive "sub-parts" regardless of whether the repo is foldered by feature or by type; **folder**
+  and **language** are alternate color modes, and hub files (cross-group connectors) render neutral.
 - **Serialization (ADR-0004):** `serde` derives on `compass-core` types; the on-disk form is a
   **versioned** compatibility surface (a version bump triggers a clean reindex).
 - **Error handling:** `thiserror` for typed library errors; `anyhow` only at the CLI/server

@@ -48,7 +48,7 @@ IDs map to the epics/stories in `ProjectInfo.md`. Priority is MoSCoW from the sp
 - **FR-13 (F1):** **Live freshness** — update the map in real time as code is edited.
 - **FR-14 (H2):** A **single source-of-truth list** of supported languages the tool reports.
 - **FR-15 (H3):** **Per-language test fixtures** so a change to one language can't silently break another.
-- **FR-20 (B — visual map):** Provide an **interactive visual map** — a force-directed graph of files (edges = imports), exploreable in the browser (pan/zoom/search/click), colored by language or folder, with an optional toggle to expand into symbols (defines/calls). The human-readable counterpart to the AI's MCP view. *(Added 2026-06-18, ADR-0005.)*
+- **FR-20 (B — visual map):** Provide an **interactive visual map** — a force-directed graph of files (edges = imports), exploreable in the browser (pan/zoom/search/click), with an optional toggle to expand into symbols (defines/calls). Nodes are **grouped/colored by detected community** (structural sub-parts of the project, derived from the dependency graph so it works regardless of by-feature vs by-type folder layout), with **by-folder** and **by-language** as alternate color modes; shared hub files render neutral. The human-readable counterpart to the AI's MCP view. *(Added 2026-06-18, ADR-0005.)*
 - **FR-21 (B — visual map, F1):** The visual map **updates live** as code is edited — the open page re-lays-out in place (no manual refresh), riding the same watcher as FR-13. *(Added 2026-06-18, ADR-0005.)*
 
 ### Could (nice-to-have)
