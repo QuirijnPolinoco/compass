@@ -43,15 +43,17 @@ IDs map to the epics/stories in `ProjectInfo.md`. Priority is MoSCoW from the sp
 ### Should (next, important)
 - **FR-9 (A3):** Auto-respect **`.gitignore`** so build artifacts/dependencies aren't mapped.
 - **FR-10 (B2):** Show a file's **dependencies and dependents** ("what I'll affect before I change it").
-- **FR-11 (C3):** Let the AI fetch only the **relevant subgraph** for a task (small, cheap context).
+- **FR-11 (C3):** Let the AI fetch only the **relevant subgraph** for a task (small, cheap context). *(Delivered by the `subgraph` query/MCP tool, ADR-0005.)*
 - **FR-12 (D2):** **Flag broken imports / references** to missing files.
 - **FR-13 (F1):** **Live freshness** — update the map in real time as code is edited.
 - **FR-14 (H2):** A **single source-of-truth list** of supported languages the tool reports.
 - **FR-15 (H3):** **Per-language test fixtures** so a change to one language can't silently break another.
+- **FR-20 (B — visual map):** Provide an **interactive visual map** — a force-directed graph of files (edges = imports), exploreable in the browser (pan/zoom/search/click), colored by language or folder, with an optional toggle to expand into symbols (defines/calls). The human-readable counterpart to the AI's MCP view. *(Added 2026-06-18, ADR-0005.)*
+- **FR-21 (B — visual map, F1):** The visual map **updates live** as code is edited — the open page re-lays-out in place (no manual refresh), riding the same watcher as FR-13. *(Added 2026-06-18, ADR-0005.)*
 
 ### Could (nice-to-have)
 - **FR-16 (B3):** Surface the **most-connected files** (where the important logic lives).
-- **FR-17 (E1):** Answer **"what connects X to Y"** (path between two parts).
+- **FR-17 (E1):** Answer **"what connects X to Y"** (path between two parts). *(Delivered by the `shortest_path` query/MCP tool, ADR-0005.)*
 - **FR-18 (E2):** Answer **"what breaks if I change this"** (impact analysis).
 - **FR-19 (H4):** Grow coverage over releases — Tier 2/3, then HTML/CSS reference edges.
 
@@ -103,6 +105,15 @@ IDs map to the epics/stories in `ProjectInfo.md`. Priority is MoSCoW from the sp
 - **A-3:** v1 transport is **MCP over stdio** (local subprocess launched by the host);
   HTTP transport is deferred. ✅ *confirmed 2026-06-17.*
 - **A-4:** "Human-readable overview" (FR-3/B1) is delivered initially as **CLI output**
-  (e.g. a tree/summary command), not a GUI. ✅ *confirmed 2026-06-17.*
+  (e.g. a tree/summary command), not a GUI. ✅ *confirmed 2026-06-17.* **Extended 2026-06-18
+  (ADR-0005):** a richer **interactive browser visualization** (`compass map`, FR-20/FR-21) is
+  added alongside the CLI output — it does not replace it. The CLI text overview stays the
+  zero-dependency default; the visual map is opt-in.
 - **A-5:** The map is held **in memory** with an on-disk cache under `.compass/` for fast
   restart; not a database. ✅ *confirmed 2026-06-17.*
+- **A-6 (ADR-0005):** The visual map is served by a **localhost-only** HTTP server bound to
+  `127.0.0.1`, opt-in (only while `compass map` runs), read-only, on an uncommon high port with
+  free-port fallback so it cannot clash with the user's services/containers. This is the single
+  network listener and a deliberate, scoped exception to "stdio-only" (A-3, which is unchanged
+  for MCP). Local-first/no-internet is preserved: the renderer is vendored and embedded, so the
+  map works offline. *Proposed 2026-06-18 — to confirm at the design-review gate.*

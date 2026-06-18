@@ -9,18 +9,24 @@ Person(ai, "AI Assistant / MCP host")
 System_Boundary(compass, "Compass binary") {
   Container(cli, "CLI", "Rust (compass-cli)", "Zero-config entrypoint; prints overview; composition root")
   Container(mcp, "MCP server", "Rust (compass-mcp, rmcp)", "Exposes the map as MCP tools over stdio")
-  Container(watch, "Watcher (post-v1)", "Rust (engine::watch, notify)", "File events -> incremental reindex")
+  Container(viz, "Map server", "Rust (compass-viz, tiny_http)", "Serves the interactive visual map + SSE live updates on 127.0.0.1 (compass map)")
+  Container(watch, "Watcher", "Rust (engine::watch, notify)", "Debounced file events -> reindex")
   Container(engine, "Engine", "Rust (compass-engine + compass-core)", "walk -> detect -> parse -> extract -> assemble -> resolve -> query")
   ContainerDb(cache, "Cache", ".compass/ on disk", "Persisted graph, keyed by content hash")
 }
 
 System_Ext(repo, "Codebase on disk")
+System_Ext(browser, "Web browser")
 
 Rel(dev, cli, "Runs", "shell")
+Rel(dev, browser, "Explores the visual map")
+Rel(browser, viz, "Loads page + receives live updates", "HTTP+SSE / 127.0.0.1")
 Rel(ai, mcp, "Queries", "MCP / stdio")
 Rel(cli, engine, "Builds / queries the map")
-Rel(mcp, engine, "Queries the map")
-Rel(watch, engine, "Triggers reparse of changed files")
+Rel(cli, viz, "Starts; publishes new map on change")
+Rel(mcp, engine, "Queries the map (via core query port)")
+Rel(viz, engine, "Reads the map (via core query port)")
+Rel(watch, engine, "Triggers reindex on change")
 Rel(engine, repo, "Walks & reads (respects .gitignore)")
 Rel(engine, cache, "Reads / writes")
 

@@ -1,0 +1,40 @@
+@startuml flow-viz
+' Embedded in docs/architecture/02-architecture.md — §6 Flow D (live visual map, ADR-0005)
+title Flow D — Live visual map (compass map)
+
+actor Developer as dev
+participant "Browser\n(Cytoscape.js)" as br
+participant "compass-cli\n(compass map)" as cli
+participant "compass-viz\n(tiny_http, 127.0.0.1)" as viz
+participant "engine::index" as idx
+participant "engine::watch\n(notify)" as watch
+database "Codebase on disk" as repo
+
+== startup ==
+dev -> cli : compass map
+cli -> idx : index(repo)
+idx --> cli : Graph
+cli -> viz : serve(state=Graph, 127.0.0.1:62049*)
+note right of viz : * uncommon high port;\n  free-port fallback if busy
+cli -> watch : watch(repo, on_change)
+cli -> br : open http://127.0.0.1:<port>
+
+== first paint ==
+br -> viz : GET /
+viz --> br : app shell + Cytoscape.js (embedded, offline)
+br -> viz : GET /graph?symbols=0
+viz --> br : GraphView as Cytoscape elements (JSON)
+br -> viz : GET /events  (SSE, held open)
+
+== live update (developer edits a file) ==
+dev -> repo : save file
+repo -> watch : fs event (debounced)
+watch -> idx : reindex(repo)
+idx --> watch : Graph'
+watch -> viz : state.publish(Graph')
+viz -->> br : SSE: event "update"
+br -> viz : GET /graph?symbols=0
+viz --> br : GraphView'
+br -> br : diff elements, keep positions\n(map glides; no reload)
+
+@enduml
