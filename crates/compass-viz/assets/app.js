@@ -17,7 +17,7 @@
 
   var cy = cytoscape({
     container: document.getElementById("cy"),
-    wheelSensitivity: 0.2,
+    wheelSensitivity: 0.85,
     minZoom: 0.04,
     maxZoom: 4,
     style: [
@@ -27,7 +27,11 @@
           "background-color": "data(color)",
           "width": "data(size)",
           "height": "data(size)",
-          "label": "data(label)",
+          // Two lines: file name, then its meaningful folder under it (set in decorate()).
+          "label": "data(display)",
+          "text-wrap": "wrap",
+          "text-max-width": 140,
+          "line-height": 1.25,
           "color": "#c7ccd8",
           "font-size": 7,
           "text-opacity": 0,
@@ -86,11 +90,29 @@
     });
   }
 
+  // The most *meaningful* folder for a file: its parent directory, but skipping a trailing
+  // generic source dir (src/lib/app/…) so e.g. `crates/compass-viz/src/lib.rs` → "compass-viz"
+  // instead of the useless "src" shared by every crate.
+  var GENERIC_DIRS = { src: 1, lib: 1, source: 1, sources: 1, app: 1, dist: 1, build: 1 };
+  function folderLabel(path) {
+    var parts = (path || "").split(/[\/\\]/).filter(Boolean);
+    parts.pop(); // drop the file name
+    if (parts.length > 1 && GENERIC_DIRS[parts[parts.length - 1].toLowerCase()]) parts.pop();
+    return parts.length ? parts[parts.length - 1] : "";
+  }
+
   function decorate() {
     cy.batch(function () {
       cy.nodes().forEach(function (n) {
         var deg = n.data("degree") || 0;
         n.data("size", 12 + Math.sqrt(deg) * 6);
+        // File nodes show "name\nfolder"; symbols just their name.
+        if (n.data("kind") === "file") {
+          var folder = folderLabel(n.data("path"));
+          n.data("display", folder ? n.data("label") + "\n" + folder : n.data("label"));
+        } else {
+          n.data("display", n.data("label"));
+        }
       });
     });
     applyColors();
