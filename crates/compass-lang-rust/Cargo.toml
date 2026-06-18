@@ -12,6 +12,8 @@ compass-core.workspace = true
 compass-extract.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust.workspace = true
+# Parse Cargo.toml (workspace members + package names) to resolve cross-crate `use`.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 [dev-dependencies]
 compass-extract = { workspace = true, features = ["test-util"] }
