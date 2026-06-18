@@ -15,8 +15,9 @@ useful on its own to a human, too.
 - **Model-agnostic** — it speaks MCP, so it works with any assistant (Claude, Gemini,
   ChatGPT, …) without integrating with any of them.
 
-> **Status:** early but functional. The core engine, the MCP server, 10 languages, and live
-> re-mapping (`compass watch`) work and are tested. Prebuilt binaries are on the
+> **Status:** early but functional. The core engine, the MCP server, 10 languages, live
+> re-mapping (`compass watch`), and an interactive **visual map** (`compass map`) work and are
+> tested. Prebuilt binaries are on the
 > [releases page](https://github.com/QuirijnPolinoco/Compass/releases).
 
 ## Quick start
@@ -78,6 +79,9 @@ compass init path/to/repo
 # A human-readable summary of the repo map
 compass overview path/to/repo
 
+# Open an interactive, live-updating visual map in your browser
+compass map path/to/repo
+
 # What a file imports, and what imports it
 compass deps path/to/repo src/main.go
 
@@ -93,6 +97,31 @@ compass languages
 # Run the MCP server over stdio (for an AI host to connect to)
 compass serve path/to/repo
 ```
+
+### The visual map
+
+`compass map` opens an interactive, force-directed picture of your repo in the browser —
+files are nodes, imports are edges — and **keeps it live as you edit** (it re-lays-out in
+place, no refresh). It's the human-readable counterpart to what the AI sees over MCP.
+
+- **Grouped by sub-part, not by folder.** Nodes are colored by *detected community* — files
+  that depend on each other cluster together — so the map shows cohesive "parts of the
+  project" whether your repo is organized by feature or by type. Shared utility files (hubs)
+  render neutral. You can also color by folder or by language with one click.
+- **Files or symbols.** Defaults to a file-level graph; toggle **Symbols** to expand into
+  functions/classes. Search, zoom-to-reveal labels, and node sizes scaled by connectivity.
+- **Local-first.** The server binds **`127.0.0.1` only**, is read-only, and lives only while
+  the command runs. The renderer is embedded, so the map works with no internet.
+
+```sh
+compass map                 # serve the live map + open the browser
+compass map --port 8123     # pick a port (default is an uncommon high one, 62049)
+compass map --no-open       # just print the URL
+compass map --snapshot      # write a self-contained .compass/map.html and exit
+```
+
+> It defaults to an uncommon high port (`62049`) and automatically falls back to a free one
+> if that's busy, so it won't collide with your other servers or containers.
 
 ### Using it from an AI assistant (MCP)
 
@@ -117,6 +146,8 @@ The server exposes these tools:
 | `overview` | File/symbol/import counts, per-language breakdown, most-connected files |
 | `file_dependencies` | What a given file imports and what imports it |
 | `broken_imports` | Imports that resolve to no real file |
+| `subgraph` | The neighborhood around a file (deps + dependents within N hops) — a small, cheap slice instead of grepping the repo |
+| `shortest_path` | The import chain connecting two files ("what connects X to Y") |
 
 ## How it works
 

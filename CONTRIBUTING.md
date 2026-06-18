@@ -17,8 +17,8 @@ Read it once; it's short on purpose.
    touch the core graph, the MCP layer, or any other language. If a change makes adding the
    *next* language harder, it's the wrong change. (See
    [`docs/architecture/decisions/0002-…`](docs/architecture/decisions/0002-pluggable-language-extractor-architecture.md).)
-3. **The core stays language-agnostic.** `compass-core` and `compass-mcp` never learn about a
-   specific language.
+3. **The core stays language-agnostic.** `compass-core`, `compass-mcp`, and `compass-viz` never
+   learn about a specific language.
 
 ---
 
@@ -33,6 +33,7 @@ reach across boundaries.
 | `crates/compass-extract` | The stable `Extractor` trait (`extract` + `resolve`), tree-sitter harness, `RawImport`, `ResolutionContext`, `Detection`, registry | Logic for a particular language |
 | `crates/compass-engine` | Orchestration as modules: `walk` (+ `.gitignore` + detection), `index`, `cache`, `config` (`watch` is post-v1) | Per-language parsing/resolution rules; MCP logic |
 | `crates/compass-mcp` | MCP server + tool definitions + `schemars` DTOs | Knowledge of any specific language; the engine (it depends on core's query port only) |
+| `crates/compass-viz` | Visual-map server (`tiny_http`, 127.0.0.1) + Cytoscape render DTOs + embedded front-end assets | Knowledge of any specific language; the engine (it depends on core's query port only) |
 | `crates/compass-cli` | The `compass` binary + composition root: `register_all()` + which languages compile in | Business logic that belongs in a library crate |
 | `crates/compass-lang-<name>` | **Everything** for one language: detection, grammar, extraction, import resolution, **plus its own `tests/fixtures/` + snapshot tests** | Any reference to another `compass-lang-*` crate |
 | `crates/compass-lang-template` | Copy-paste skeleton for a new language (excluded from the workspace) | Real language logic |
@@ -76,8 +77,8 @@ PR checklist:
 - [ ] **Fixtures + tests** — a sample project + `insta` snapshot tests **inside the crate**
       at `crates/compass-lang-<name>/tests/`, asserting the expected nodes and edges.
 - [ ] **No core changes** — implemented entirely behind the `Extractor` interface;
-      `compass-core`, `compass-engine`, and `compass-mcp` untouched, and no other language crate
-      referenced. The only shared edits allowed are in the **composition root**: the optional
+      `compass-core`, `compass-engine`, `compass-mcp`, and `compass-viz` untouched, and no other
+      language crate referenced. The only shared edits allowed are in the **composition root**: the optional
       dependency + `lang-<name>` feature in `crates/compass-cli/Cargo.toml`, and one
       `register()` line in `register_all()`.
 - [ ] **Docs** — added to the supported-languages list and the roadmap updated.
