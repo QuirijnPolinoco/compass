@@ -20,6 +20,25 @@ struct FileArgs {
     file: String,
 }
 
+/// Arguments for `subgraph`: a file to center on and how far out to reach.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SubgraphArgs {
+    /// Repo-relative, forward-slash path to center the slice on.
+    file: String,
+    /// How many import-hops out to include. Defaults to 1 (direct neighbors).
+    #[serde(default)]
+    depth: Option<usize>,
+}
+
+/// Arguments for `shortest_path`: the two files to connect.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct PathArgs {
+    /// Repo-relative, forward-slash path to start from.
+    from: String,
+    /// Repo-relative, forward-slash path to reach.
+    to: String,
+}
+
 /// The MCP server. Holds a query handle and exposes the map as MCP tools.
 #[derive(Clone)]
 pub struct MapServer {
@@ -61,6 +80,47 @@ impl MapServer {
     #[tool(description = "List imports that resolve to no real file (broken references).")]
     async fn broken_imports(&self) -> String {
         serde_json::to_string_pretty(&self.query.broken_imports()).unwrap_or_default()
+    }
+
+    #[tool(
+        description = "The neighborhood around a file: every file within `depth` import-hops \
+                       (its dependencies and dependents) plus the import edges among them. Fetch \
+                       this to load just the relevant slice of the repo instead of grepping or \
+                       reading everything. Args: `file` (repo-relative path), optional `depth` \
+                       (default 1)."
+    )]
+    async fn subgraph(
+        &self,
+        Parameters(SubgraphArgs { file, depth }): Parameters<SubgraphArgs>,
+    ) -> String {
+        let depth = depth.unwrap_or(1);
+        match self.query.subgraph(&file, depth) {
+            Some(sub) => serde_json::to_string_pretty(&sub).unwrap_or_default(),
+            None => format!("{{\"error\":\"file not in map: {file}\"}}"),
+        }
+    }
+
+    #[tool(
+        description = "The shortest import path connecting two files — \"what connects X to Y\". \
+                       Args: `from` and `to` are repo-relative paths. Returns the chain of files, \
+                       or an error if either is unmapped or they are not connected."
+    )]
+    async fn shortest_path(
+        &self,
+        Parameters(PathArgs { from, to }): Parameters<PathArgs>,
+    ) -> String {
+        match self.query.shortest_path(&from, &to) {
+            Some(path) => serde_json::to_string_pretty(&serde_json::json!({
+                "from": from,
+                "to": to,
+                "path": path,
+            }))
+            .unwrap_or_default(),
+            None => format!(
+                "{{\"error\":\"no path between {from} and {to} \
+                 (one may be unmapped, or they are unconnected)\"}}"
+            ),
+        }
     }
 }
 
