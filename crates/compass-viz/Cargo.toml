@@ -1,0 +1,14 @@
+[package]
+name = "compass-viz"
+description = "Compass — interactive visual map served on localhost (HTTP + SSE)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+compass-core.workspace = true
+tiny_http.workspace = true
+serde.workspace = true
+serde_json.workspace = true

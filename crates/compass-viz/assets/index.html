@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compass — map</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div id="cy"></div>
+
+  <header id="toolbar">
+    <span id="brand">Compass</span>
+    <input id="search" type="search" placeholder="Find a file…" autocomplete="off" spellcheck="false">
+    <label class="control">
+      <span>Color</span>
+      <select id="color-mode">
+        <option value="group">Sub-part</option>
+        <option value="folder">Folder</option>
+        <option value="language">Language</option>
+      </select>
+    </label>
+    <label class="control toggle">
+      <input id="symbols" type="checkbox">
+      <span>Symbols</span>
+    </label>
+    <button id="fit" type="button" title="Fit graph to view">Fit</button>
+  </header>
+
+  <div id="status"><span id="counts"></span><span id="live" class="off">offline</span></div>
+
+  <script src="/vendor/cytoscape.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -5,6 +5,7 @@ members = [
     "crates/compass-extract",
     "crates/compass-engine",
     "crates/compass-mcp",
+    "crates/compass-viz",
     "crates/compass-cli",
     "crates/compass-lang-go",
     "crates/compass-lang-python",
@@ -34,6 +35,7 @@ compass-core = { path = "crates/compass-core" }
 compass-extract = { path = "crates/compass-extract" }
 compass-engine = { path = "crates/compass-engine" }
 compass-mcp = { path = "crates/compass-mcp" }
+compass-viz = { path = "crates/compass-viz" }
 
 # Shared external deps — pinned ONCE here so versions can't drift across crates.
 # tree-sitter + grammars are added per the crate that needs them via `cargo add`
@@ -42,6 +44,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"
+# Tiny synchronous HTTP/SSE server for the localhost visual map (ADR-0005).
+tiny_http = "0.12.0"
 
 # Parsing engine + grammars — pinned ONCE so versions can't drift across crates.
 tree-sitter = "0.26.9"
