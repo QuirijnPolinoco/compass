@@ -7,6 +7,10 @@
 # Compass's per-repo cache/state (written into mapped repos)
 .compass/
 
+# Per-repo MCP config + local agent settings — machine-specific (absolute paths), never publish
+.mcp.json
+.claude/settings.local.json
+
 # Editor / OS noise
 .DS_Store
 .idea/
