@@ -7,11 +7,14 @@
 > [ADR-0002 (extractor architecture)](decisions/0002-pluggable-language-extractor-architecture.md) ·
 > [ADR-0003 (explicit registry)](decisions/0003-extractor-registration-explicit-registry.md) ·
 > [ADR-0004 (serde & cache format)](decisions/0004-serde-placement-and-cache-format-versioning.md) ·
-> [ADR-0005 (visualization & local server)](decisions/0005-visualization-subsystem-and-local-server.md)
+> [ADR-0005 (visualization & local server)](decisions/0005-visualization-subsystem-and-local-server.md) ·
+> [ADR-0006 (context pre-injection)](decisions/0006-context-pre-injection.md)
 >
 > Structure validated by an independent architect review (2026-06-17); the refinements it
 > produced are incorporated here. The visualization subsystem (`compass-viz`, the `compass map`
-> command, and the new graph queries) was added 2026-06-18 per ADR-0005.
+> command, and the new graph queries) was added 2026-06-18 per ADR-0005. Context pre-injection
+> (`compass context` + a host hook; the benchmark-driven default delivery, with MCP kept for
+> deepening) was added 2026-06-19 per ADR-0006.
 
 ## 1. Overview & chosen stack
 
@@ -81,12 +84,12 @@ features); core, engine, and mcp never do.
 
 | Component (crate) | Responsibility (one line) | Talks to |
 |-------------------|---------------------------|----------|
-| `compass-core` | Language-agnostic domain: graph model, `File`/`Symbol`/edge types, `LanguageId`, cross-crate `Diagnostic`, query engine + a query **port** trait (`overview`, `file_dependencies`, `broken_imports`, and — per ADR-0005 — `graph_view`, `subgraph`, `shortest_path`). Owns the serde-serialized form (versioned). | (depended on by everything) |
+| `compass-core` | Language-agnostic domain: graph model, `File`/`Symbol`/edge types, `LanguageId`, cross-crate `Diagnostic`, query engine + a query **port** trait (`overview`, `file_dependencies`, `broken_imports`; `graph_view`, `subgraph`, `shortest_path` per ADR-0005; `context` per ADR-0006). Owns the serde-serialized form (versioned). | (depended on by everything) |
 | `compass-extract` | The **stable contract**: the `Extractor` trait (two phases — `extract` + `resolve`), the tree-sitter parse harness, `RawImport`, `ResolutionContext`, `Detection { extensions, shebangs }`, an opaque `LangConfig` carrier, the unresolved/extractor error variant, and the `Registry` + `register` entry point | `compass-core` |
 | `compass-engine` | Orchestrate full/incremental indexing. Internal modules: `walk` (gitignore-aware walk + registry-driven detection), `index` (rayon parse+extract, builds the `ResolutionContext`, calls `Extractor::resolve`, assembles the graph), `cache` (`.compass/` persistence), `watch` (live re-mapping, FR-13); `config` (`.compass.toml`) is planned. | `compass-core`, `compass-extract` |
 | `compass-mcp` | Expose query operations as MCP tools over stdio (`rmcp`) — `overview`, `file_dependencies`, `broken_imports`, plus `subgraph` and `shortest_path` (ADR-0005); `schemars` DTO wrappers own the wire schema | `compass-core` (query types + query **port**) — **not** the engine |
 | `compass-viz` | Serve the interactive force-directed **visual map** to the browser: a `127.0.0.1` HTTP server (`tiny_http`) with SSE live-push, and a self-contained `map.html` snapshot. Vendors **Cytoscape.js** (embedded offline) and owns its render DTOs (Cytoscape element JSON). Like `compass-mcp`, depends on `compass-core`'s query **port** — **not** the engine (ADR-0005) | `compass-core` (query **port**) |
-| `compass-cli` | Binary entrypoint `compass`; arg parsing; **composition root**: explicit `cfg`-gated `register_all()`, wires the concrete engine into the MCP **and** viz query ports, and drives `compass map` (start viz server + watch loop, publish live updates) | everything above + the language crates (feature-gated) |
+| `compass-cli` | Binary entrypoint `compass`; arg parsing; **composition root**: explicit `cfg`-gated `register_all()`, wires the concrete engine into the MCP **and** viz query ports, drives `compass map` (start viz server + watch loop, publish live updates), and renders `compass context` for prompt pre-injection (ADR-0006) | everything above + the language crates (feature-gated) |
 | `compass-lang-*` | One crate per language: `Detection`, grammar, symbol extraction, **and** that language's import-resolution algorithm; ships its own fixtures + snapshot tests | `compass-extract`, `compass-core` |
 | `compass-lang-template` | Copy-paste skeleton for a new language; **excluded** from the workspace so it never links or gates CI | (template only) |
 
@@ -127,9 +130,10 @@ index and patched per-file on incremental update. The disk cache is keyed by con
 and tagged with a **cache-format version** (ADR-0004) — a stale or mismatched cache triggers
 a clean reindex, never a blind trust.
 
-**Query results are derived, not stored.** `Overview`, `FileDependencies`, and (ADR-0005)
+**Query results are derived, not stored.** `Overview`, `FileDependencies`, (ADR-0005)
 `GraphView` (all nodes/edges for rendering, files-only or files+symbols), `Subgraph` (the
-neighborhood around a file), and the `shortest_path` result are **computed on demand** from the
+neighborhood around a file), the `shortest_path` result, and (ADR-0006) the `ContextPack`
+(the token-bounded slice pre-injected into a prompt) are **computed on demand** from the
 graph above — they add no new persisted entity and no new edge type. The visual map is just a
 `GraphView` rendered in the browser; the AI's cheap fetch is a `Subgraph` over the same data.
 Each `GraphView` file node also carries a **community `group` id** and an **`is_hub` flag** from a
@@ -294,6 +298,9 @@ compass/
 │
 ├── crates/compass-lang-template/      # EXCLUDED from workspace.members; created AFTER a real extractor exists.
 │
+├── integrations/
+│   └── claude-code/                 # host wiring: the UserPromptSubmit pre-injection hook (ADR-0006)
+│
 └── tests/
     └── e2e/                         # ONLY the cross-crate smoke test: walk → graph → MCP overview.
                                      #   Per-language fixtures live in each lang crate, NOT here.
@@ -332,6 +339,13 @@ optional workspace dependency and `lang-<name>` feature in `compass-cli` + one l
   label-propagation pass over the import graph, computed in `compass-core`), so the map highlights
   cohesive "sub-parts" regardless of whether the repo is foldered by feature or by type; **folder**
   and **language** are alternate color modes, and hub files (cross-group connectors) render neutral.
+- **AI delivery is pre-injection-first (ADR-0006):** the **default** way an agent gets the map is
+  `compass context` — a token-bounded slice (summary + most-relevant files, by seed-neighborhood /
+  query-term / centrality) **pre-injected into the prompt** via a host hook (e.g. Claude Code
+  `UserPromptSubmit`), so the agent reasons instead of exploring (a benchmark showed the tool-loop's
+  per-call turn cost cancels its savings — see [`docs/benchmarks/`](../benchmarks/README.md)). The
+  **MCP** tools are kept for **on-demand deepening** when the pre-injected slice misses, and as the
+  **cross-host portability** path (hooks are per-host; MCP is the one universal protocol — FR-5/C2).
 - **Serialization (ADR-0004):** `serde` derives on `compass-core` types; the on-disk form is a
   **versioned** compatibility surface (a version bump triggers a clean reindex).
 - **Error handling:** `thiserror` for typed library errors; `anyhow` only at the CLI/server
