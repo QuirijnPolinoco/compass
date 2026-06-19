@@ -12,6 +12,8 @@ compass-core.workspace = true
 compass-extract.workspace = true
 tree-sitter.workspace = true
 tree-sitter-typescript.workspace = true
+# Parse tsconfig.json (baseUrl + paths aliases) to resolve `@/…`-style imports.
+serde_json.workspace = true
 
 [dev-dependencies]
 compass-extract = { workspace = true, features = ["test-util"] }
