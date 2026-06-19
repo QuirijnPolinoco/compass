@@ -1,168 +1,151 @@
-# Compass
+# 🧭 Compass
 
-**A local-first tool that maps any codebase into a queryable graph — and serves it to AI
-coding assistants over [MCP](https://modelcontextprotocol.io).**
+**A local-first map of your codebase — for your AI _and_ for you.**
 
-AI assistants waste tokens grepping a whole repo to find the right files, and sometimes
-edit the wrong ones or invent paths that don't exist. Compass gives the human *and* the AI a
-shared, accurate map — what files exist, how they connect (imports), and where the
-important logic lives — so the assistant goes straight to the right files. The map is
-useful on its own to a human, too.
+Compass parses your repo into a queryable graph and feeds the *relevant slice* straight into
+your AI assistant's prompt — so it stops grepping the whole tree and starts reasoning. The same
+graph powers a **live, interactive map** you can open in the browser.
 
-- **Local-first & private** — parsing runs entirely on your machine with [tree-sitter];
-  no network calls, no API keys, your code never leaves the box.
-- **One binary, zero config** — run it in a repo and you get a map in seconds.
-- **Model-agnostic** — it speaks MCP, so it works with any assistant (Claude, Gemini,
-  ChatGPT, …) without integrating with any of them.
-
-> **Status:** early but functional. The core engine, the MCP server, 10 languages, live
-> re-mapping (`compass watch`), and an interactive **visual map** (`compass map`) work and are
-> tested. Prebuilt binaries are on the
-> [releases page](https://github.com/QuirijnPolinoco/Compass/releases).
-
-## Quick start
+![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+![platforms](https://img.shields.io/badge/platforms-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-informational)
+![built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
+![languages mapped](https://img.shields.io/badge/languages%20mapped-10-success)
+![local-first](https://img.shields.io/badge/local--first-no%20network-success)
 
 ```sh
-# 1. Install (one time)
-cargo install --path crates/compass-cli      # or grab a binary from Releases
-
-# 2. In your project — build the map AND enable your AI assistant, in one step:
-compass init
+compass init     # map the repo + wire up your AI assistant
+compass map      # open the live visual map in your browser
 ```
 
-`compass init` indexes the repo (creating `.compass/`, or refreshing it if it already
-exists) and writes a `.mcp.json` so any MCP-capable assistant (Claude Code, …) uses Compass
-automatically. It's idempotent — re-run it anytime.
+* * *
+
+## What is Compass?
+
+AI coding assistants waste tokens grepping a whole repo to find the right files — and sometimes
+edit the wrong ones or invent paths that don't exist. Compass gives the human **and** the AI a
+shared, accurate map: what files exist, how they connect (imports), and where the important logic
+lives. Then it delivers that map two ways:
+
+- **To your AI** — by *pre-injecting* the relevant slice into each prompt (and an MCP server for
+  deeper, on-demand queries). Your AI goes straight to the right files.
+- **To you** — as an interactive, force-directed graph in the browser that updates live as you edit.
+
+It's **local-first** (parsing runs on your machine with [tree-sitter] — no network, no API keys,
+your code never leaves the box), **one binary, zero config**, and **model-agnostic**.
+
+> **Status:** early but functional. The engine, MCP server, 10 languages, live re-mapping, the
+> visual map, and prompt pre-injection all work and are tested.
+
+* * *
+
+## Results
+
+In a **controlled A/B** on a real ~280-file Rust + TypeScript workspace (one strong agent, 10
+tasks, identical prompts/tools — only the delivery differed), pre-injecting Compass's map slice
+**cut the agent's tool calls ~31%** vs. both plain grep and calling Compass as an MCP tool — while
+keeping accuracy.
+
+| Delivery | Tool calls to locate (10 tasks) |
+|----------|---------------------------------|
+| grep only | 66 |
+| Compass as an MCP tool the agent calls | 65 |
+| **Compass pre-injection** | **45 (≈31% fewer)** |
+
+Honest by design: the MCP tool-loop alone was a wash (calling a tool adds turns), and on simple
+symbol lookups a capable agent + grep is already fine. Full methodology, per-task numbers, and
+caveats (n=1, self-reported, etc.) — including where Compass *doesn't* win — are in
+**[docs/benchmarks](docs/benchmarks/README.md)**.
+
+* * *
+
+## Supported AI tools
+
+| Assistant | How Compass plugs in |
+|-----------|----------------------|
+| **Claude Code** | `UserPromptSubmit` hook for **pre-injection** (the efficient default) + MCP for deepening — see [integrations/claude-code](integrations/claude-code/) |
+| **Cursor · Windsurf · any MCP host** | MCP server over stdio (`compass serve`) |
+| **Anything else** | pipe `compass context` output into the prompt yourself |
+
+* * *
 
 ## Supported languages
 
-Go · Python · Java · C# · TypeScript/JavaScript · Rust · Kotlin · Ruby · PHP · C
+| | | | | |
+|---|---|---|---|---|
+| Go | Python | Java | C# | TypeScript/JS |
+| Rust | Kotlin | Ruby | PHP | C |
 
 Adding a language is a self-contained unit of work behind a stable interface — see
-[CONTRIBUTING.md](CONTRIBUTING.md). More languages are on the roadmap in
-[`ProjectInfo.md`](ProjectInfo.md).
+[CONTRIBUTING.md](CONTRIBUTING.md). More are on the roadmap in [`ProjectInfo.md`](ProjectInfo.md).
+
+* * *
 
 ## Install
 
-Compass is one self-contained binary. Building from source with Rust works on every OS today;
-a prebuilt download is offered when a release is available.
+Compass is one self-contained binary. Building from source works on every OS today; a prebuilt
+download is offered when a release is available.
 
-### 1. Prerequisites
-
-A **Rust toolchain** and a **C compiler** (the tree-sitter grammars are C). Per OS:
+### 1. Prerequisites — Rust + a C compiler (for the tree-sitter grammars)
 
 | OS | Rust | C compiler |
 |----|------|-----------|
-| **Windows** | [rustup](https://rustup.rs) (the `x86_64-pc-windows-msvc` default) | **Microsoft C++ Build Tools** — installer → "Desktop development with C++" |
-| **macOS** | [rustup](https://rustup.rs) | Xcode CLT: `xcode-select --install` |
-| **Linux** | [rustup](https://rustup.rs) | `sudo apt install build-essential` (Debian/Ubuntu) · `sudo dnf groupinstall "Development Tools"` (Fedora) |
+| **Windows** | [rustup](https://rustup.rs) | **Microsoft C++ Build Tools** → "Desktop development with C++" |
+| **macOS** | [rustup](https://rustup.rs) | `xcode-select --install` |
+| **Linux** | [rustup](https://rustup.rs) | `sudo apt install build-essential` · `sudo dnf groupinstall "Development Tools"` |
 
-Verify: `cargo --version` should print **1.85 or newer**.
+`cargo --version` should print **1.85+**.
 
-### 2. Build & install from source (works today)
-
-From the repo root — same command on every OS:
+### 2. Build & install (same on every OS)
 
 ```sh
 cargo install --path crates/compass-cli
 ```
 
-This compiles the release binary (~1–2 min the first time; it builds all 10 grammars) and
-installs `compass` into Cargo's bin dir, which rustup already adds to your `PATH`:
-
-- **Windows:** `%USERPROFILE%\.cargo\bin\compass.exe`
-- **macOS / Linux:** `~/.cargo/bin/compass`
-
-Open a **new** terminal and verify:
+Installs `compass` into Cargo's bin dir — `%USERPROFILE%\.cargo\bin` (Windows) or `~/.cargo/bin`
+(macOS/Linux), already on your `PATH` via rustup. Open a new terminal and check:
 
 ```sh
 compass --help
-compass languages      # should list all 10 languages
+compass languages      # lists all 10 languages
 ```
 
-If `compass` isn't found, add that Cargo bin dir to your `PATH` and reopen the terminal.
+> **Just trying it?** From the repo root: `cargo run -p compass-cli -- map .` (no install).
 
-> **Just trying it out?** Skip the install and run any command from the repo root with
-> `cargo run -p compass-cli -- <args>` (e.g. `cargo run -p compass-cli -- map .`).
+### 3. Prebuilt binary (if a release exists)
 
-### 3. Prebuilt binary (if a release is available)
+Grab your platform's asset from the [latest release](https://github.com/QuirijnPolinoco/compass/releases/latest),
+unpack, and put `compass` on your `PATH`. (`brew`/`scoop`/`cargo-binstall` are on the roadmap.)
 
-No runtime, no dependencies — grab your platform's asset from the
-[latest release](https://github.com/QuirijnPolinoco/Compass/releases/latest), unpack it, and
-put `compass` on your `PATH`:
+* * *
 
-| Platform | Asset |
-|----------|-------|
-| Linux (x86-64) | `compass-x86_64-unknown-linux-gnu.tar.gz` (or `-musl` for a fully static build) |
-| macOS (Apple Silicon) | `compass-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `compass-x86_64-apple-darwin.tar.gz` |
-| Windows (x86-64) | `compass-x86_64-pc-windows-msvc.zip` |
-
-(A `brew` / `scoop` / `cargo-binstall` one-liner is on the roadmap.)
-
-## Usage
+## Quickstart
 
 ```sh
-# Set up a repo in one step: build the map + enable MCP (start here)
-compass init path/to/repo
-
-# A human-readable summary of the repo map
-compass overview path/to/repo
-
-# Open an interactive, live-updating visual map in your browser
-compass map path/to/repo
-
-# What a file imports, and what imports it
-compass deps path/to/repo src/main.go
-
-# Imports that point at files that don't exist
-compass broken path/to/repo
-
-# Keep the map fresh automatically as you edit (Ctrl+C to stop)
-compass watch path/to/repo
-
-# Print the most relevant slice of the map for a task — to pre-inject into an AI prompt
-compass context path/to/repo --query "add a retry to the HTTP client"
-
-# Which languages this build supports
-compass languages
-
-# Run the MCP server over stdio (for an AI host to connect to)
-compass serve path/to/repo
+cd your/project
+compass init     # build the map (.compass/) + write .mcp.json for MCP hosts
+compass map      # open the live visual map (auto-picks a free localhost port)
 ```
 
-### The visual map
+`compass init` is idempotent — re-run it anytime. Common commands:
 
-`compass map` opens an interactive, force-directed picture of your repo in the browser —
-files are nodes, imports are edges — and **keeps it live as you edit** (it re-lays-out in
-place, no refresh). It's the human-readable counterpart to what the AI sees over MCP.
+| Command | What it does |
+|---------|--------------|
+| `compass init` | Map the repo + wire up MCP |
+| `compass map` | Live, interactive visual map in the browser (`--snapshot` for a static `.html`) |
+| `compass context --query "…"` | The relevant map slice to pre-inject into a prompt |
+| `compass overview` | Human-readable summary (files, languages, most-connected) |
+| `compass deps <file>` | What a file imports and what imports it |
+| `compass broken` | Imports that resolve to no real file |
+| `compass watch` | Re-map automatically as you edit |
+| `compass serve` | Run the MCP server over stdio |
 
-- **Grouped by sub-part, not by folder.** Nodes are colored by *detected community* — files
-  that depend on each other cluster together — so the map shows cohesive "parts of the
-  project" whether your repo is organized by feature or by type. Shared utility files (hubs)
-  render neutral. You can also color by folder or by language with one click.
-- **Files or symbols.** Defaults to a file-level graph; toggle **Symbols** to expand into
-  functions/classes. Search, zoom-to-reveal labels, and node sizes scaled by connectivity.
-- **Local-first.** The server binds **`127.0.0.1` only**, is read-only, and lives only while
-  the command runs. The renderer is embedded, so the map works with no internet.
+* * *
 
-```sh
-compass map                 # serve the live map + open the browser
-compass map --port 8123     # pick a port (default is an uncommon high one, 62049)
-compass map --no-open       # just print the URL
-compass map --snapshot      # write a self-contained .compass/map.html and exit
-```
+## Make your assistant always use the map
 
-> It defaults to an uncommon high port (`62049`) and automatically falls back to a free one
-> if that's busy, so it won't collide with your other servers or containers.
-
-### Using it from an AI assistant
-
-There are two complementary ways to give an AI the map ([ADR-0006](docs/architecture/decisions/0006-context-pre-injection.md)):
-
-**1. Pre-injection (the efficient default).** Inject the relevant slice of the map into the
-prompt *before* the AI reasons, so it goes straight to the right files instead of exploring.
-For **Claude Code**, add this `UserPromptSubmit` hook to your project's `.claude/settings.json`:
+The biggest win is **pre-injection** — give the AI the right context *before* it starts, so it
+never wastes turns exploring. For **Claude Code**, drop this into your project's
+`.claude/settings.json`:
 
 ```json
 {
@@ -174,60 +157,69 @@ For **Claude Code**, add this `UserPromptSubmit` hook to your project's `.claude
 }
 ```
 
-`compass context --hook` reads the prompt from stdin, ranks the most relevant files, and prints
-a compact map slice Claude Code adds to the context — no scripting, cross-platform, and
-failure-safe. See [`integrations/claude-code/`](integrations/claude-code/). (A benchmark found
-this is where the token savings actually are — [`docs/benchmarks/`](docs/benchmarks/README.md).)
+`compass context --hook` reads the prompt from stdin, ranks the most relevant files, and prints a
+compact map slice Claude Code adds to the context — no scripting, cross-platform, failure-safe,
+and fast (it uses the `.compass/` cache). Details + the `/compass` slash command:
+[integrations/claude-code](integrations/claude-code/).
 
-**2. MCP tools (deepening + any other host).** `compass init` writes the `.mcp.json` below;
-keep it for on-demand deepening (`subgraph`, `shortest_path`, …) when the pre-injected slice
-misses, and as the universal path for non-Claude hosts. To wire it up by hand — Compass is an
-MCP server over stdio:
+For other hosts, `compass init` registers the MCP server, exposing these tools:
 
-```json
-{
-  "mcpServers": {
-    "compass": {
-      "command": "compass",
-      "args": ["serve", "path/to/repo"]
-    }
-  }
-}
-```
-
-The server exposes these tools:
-
-| Tool | What it returns |
-|------|-----------------|
+| Tool | Returns |
+|------|---------|
 | `overview` | File/symbol/import counts, per-language breakdown, most-connected files |
-| `file_dependencies` | What a given file imports and what imports it |
+| `file_dependencies` | What a file imports and what imports it |
+| `subgraph` | The neighborhood around a file — a small, cheap slice instead of grepping |
+| `shortest_path` | The import chain connecting two files |
 | `broken_imports` | Imports that resolve to no real file |
-| `subgraph` | The neighborhood around a file (deps + dependents within N hops) — a small, cheap slice instead of grepping the repo |
-| `shortest_path` | The import chain connecting two files ("what connects X to Y") |
+
+* * *
+
+## The visual map
+
+`compass map` opens a force-directed picture of your repo — files are nodes, imports are edges —
+that **updates live as you edit** (it re-lays-out in place, no refresh).
+
+- **Grouped by sub-part, not folder.** Nodes are colored by *detected community* (files that
+  depend on each other), so cohesive parts of the project pop — whether you organize by feature
+  or by type. Switch to color-by-folder or by-language with one click; shared hubs render neutral.
+- **Files or symbols.** A file-level graph by default; toggle **Symbols** to expand into
+  functions/classes. Plus search, zoom-to-reveal labels, and node sizes scaled by connectivity.
+- **Local-first.** The server binds **`127.0.0.1` only**, is read-only, lives only while the
+  command runs, and the renderer is embedded — so it works with no internet.
+
+* * *
 
 ## How it works
 
 1. Walk the repo, respecting `.gitignore`.
 2. Detect each file's language (by extension, with a shebang fallback).
-3. Parse each file locally with tree-sitter and extract symbols + imports.
-4. Resolve imports to real files and build a language-agnostic graph.
-5. Serve that one graph three ways: a human **visual map** (`compass map`), AI **pre-injection**
+3. Parse each file locally with [tree-sitter] and extract symbols + imports.
+4. Resolve imports to real files and build one language-agnostic graph.
+5. Serve that graph three ways: the **visual map** (`compass map`), **pre-injection**
    (`compass context`), and **MCP** tools (`compass serve`).
 
-The architecture — a Cargo workspace with a language-agnostic core and one crate per
-language behind a stable `Extractor` trait — is documented in
-[`docs/architecture/`](docs/architecture/) (requirements, ADRs, and diagrams).
+The architecture — a Cargo workspace with a language-agnostic core and one crate per language
+behind a stable `Extractor` trait — is documented in [`docs/architecture/`](docs/architecture/)
+(requirements, ADRs, and diagrams).
+
+* * *
+
+## Privacy
+
+100% local. Parsing runs on your machine; **no network calls, no telemetry, no API keys**; your
+code is only ever *read*, never executed or uploaded. The map lives on disk under `.compass/`.
+The visual-map server is loopback-only and read-only.
+
+* * *
 
 ## Contributing
 
 Contributions — especially new languages — are very welcome. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md): it covers the repo layout, the living-docs rule, and a
-step-by-step checklist for adding a language (copy `crates/compass-lang-template/` and fill
-in the TODOs).
+[CONTRIBUTING.md](CONTRIBUTING.md): repo layout, the living-docs rule, and a step-by-step
+checklist for adding a language (copy `crates/compass-lang-template/` and fill in the TODOs).
 
 ## License
 
-Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
-option.
+Dual-licensed under either [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
