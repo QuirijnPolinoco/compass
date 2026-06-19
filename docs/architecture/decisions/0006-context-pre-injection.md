@@ -61,6 +61,9 @@ recommendation: pre-inject a summary at session start, deepen with MCP during wo
   per host (we ship the producer, not every host's hook); `context` ranking quality depends on
   the graph's completeness — which is why dependent-recall (the path-qualified-usage gap from
   the benchmark) should be fixed alongside.
-- **Follow-ups:** add `context` to the query port + `Graph` impl + tests; add the `compass
-  context` CLI; ship a Claude Code `UserPromptSubmit` hook example; document in README; a
-  session-graph (don't re-inject what was already shown) is a later optimization.
+- **Follow-ups (done 2026-06-19):** `context` on the query port + `Graph` impl + tests; the
+  `compass context` CLI + `--hook`; the Claude Code `UserPromptSubmit` hook + `/compass`
+  command; README; and the **session graph** — `compass context --hook` keys off the payload's
+  `session_id` and skips files already injected this session (tracked in
+  `.compass/sessions/<id>.json`), so a long session stops re-paying for context the agent
+  already holds.

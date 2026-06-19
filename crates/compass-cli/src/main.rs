@@ -416,9 +416,11 @@ fn run_context(args: &[String]) -> ExitCode {
         }
     }
 
+    let mut session_id: Option<String> = None;
     if hook {
-        // UserPromptSubmit payload: { "prompt": "...", "cwd": "...", ... }. Pull the prompt
-        // (as the query) and the cwd (if no PATH was given). Anything missing → just skip.
+        // UserPromptSubmit payload: { "prompt", "cwd", "session_id", ... }. Pull the prompt
+        // (as the query), the cwd (if no PATH given), and the session id (for the session
+        // graph). Anything missing → just skip.
         use std::io::Read as _;
         let mut buf = String::new();
         if std::io::stdin().read_to_string(&mut buf).is_ok() {
@@ -431,6 +433,10 @@ fn run_context(args: &[String]) -> ExitCode {
                         path = PathBuf::from(cwd);
                     }
                 }
+                session_id = v
+                    .get("session_id")
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
             }
         }
     }
@@ -451,13 +457,67 @@ fn run_context(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         };
     };
-    let pack = graph.context(&ContextRequest {
+    let mut pack = graph.context(&ContextRequest {
         query,
         seeds,
         max_files,
     });
+
+    // Session graph (ADR-0006 follow-up): within one editor session, don't re-inject files
+    // already shown — they're still in the conversation. Keep only files new to this session,
+    // then remember them. If nothing is new, inject nothing (don't spend tokens repeating).
+    if let Some(sid) = session_id.filter(|_| hook) {
+        let mut seen = load_session_seen(&path, &sid);
+        pack.files.retain(|f| !seen.contains(&f.path));
+        if pack.files.is_empty() {
+            return ExitCode::SUCCESS;
+        }
+        for f in &pack.files {
+            seen.push(f.path.clone());
+        }
+        save_session_seen(&path, &sid, &seen);
+    }
+
     print!("{}", render_context_markdown(&path, &pack));
     ExitCode::SUCCESS
+}
+
+/// Path of a session's "already-injected files" list under the repo's `.compass/sessions/`.
+fn session_seen_path(repo: &Path, session_id: &str) -> PathBuf {
+    // Session ids are host-generated (UUIDs); keep only filename-safe chars defensively.
+    let safe: String = session_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    repo.join(".compass")
+        .join("sessions")
+        .join(format!("{safe}.json"))
+}
+
+/// Files already injected this session (most-recent last), or empty if none/unreadable.
+fn load_session_seen(repo: &Path, session_id: &str) -> Vec<String> {
+    std::fs::read_to_string(session_seen_path(repo, session_id))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the session's injected-files list, capped to the most recent 1000 (best-effort).
+fn save_session_seen(repo: &Path, session_id: &str, seen: &[String]) {
+    let path = session_seen_path(repo, session_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let start = seen.len().saturating_sub(1000);
+    if let Ok(json) = serde_json::to_string(&seen[start..]) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 /// Render a context pack as a compact markdown block suitable for prompt injection.
