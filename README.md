@@ -44,8 +44,50 @@ Adding a language is a self-contained unit of work behind a stable interface —
 
 ## Install
 
-**Recommended — download a prebuilt binary.** Compass is a single self-contained executable:
-no runtime, no dependencies. Grab the one for your platform from the
+Compass is one self-contained binary. Building from source with Rust works on every OS today;
+a prebuilt download is offered when a release is available.
+
+### 1. Prerequisites
+
+A **Rust toolchain** and a **C compiler** (the tree-sitter grammars are C). Per OS:
+
+| OS | Rust | C compiler |
+|----|------|-----------|
+| **Windows** | [rustup](https://rustup.rs) (the `x86_64-pc-windows-msvc` default) | **Microsoft C++ Build Tools** — installer → "Desktop development with C++" |
+| **macOS** | [rustup](https://rustup.rs) | Xcode CLT: `xcode-select --install` |
+| **Linux** | [rustup](https://rustup.rs) | `sudo apt install build-essential` (Debian/Ubuntu) · `sudo dnf groupinstall "Development Tools"` (Fedora) |
+
+Verify: `cargo --version` should print **1.85 or newer**.
+
+### 2. Build & install from source (works today)
+
+From the repo root — same command on every OS:
+
+```sh
+cargo install --path crates/compass-cli
+```
+
+This compiles the release binary (~1–2 min the first time; it builds all 10 grammars) and
+installs `compass` into Cargo's bin dir, which rustup already adds to your `PATH`:
+
+- **Windows:** `%USERPROFILE%\.cargo\bin\compass.exe`
+- **macOS / Linux:** `~/.cargo/bin/compass`
+
+Open a **new** terminal and verify:
+
+```sh
+compass --help
+compass languages      # should list all 10 languages
+```
+
+If `compass` isn't found, add that Cargo bin dir to your `PATH` and reopen the terminal.
+
+> **Just trying it out?** Skip the install and run any command from the repo root with
+> `cargo run -p compass-cli -- <args>` (e.g. `cargo run -p compass-cli -- map .`).
+
+### 3. Prebuilt binary (if a release is available)
+
+No runtime, no dependencies — grab your platform's asset from the
 [latest release](https://github.com/QuirijnPolinoco/Compass/releases/latest), unpack it, and
 put `compass` on your `PATH`:
 
@@ -56,19 +98,7 @@ put `compass` on your `PATH`:
 | macOS (Intel) | `compass-x86_64-apple-darwin.tar.gz` |
 | Windows (x86-64) | `compass-x86_64-pc-windows-msvc.zip` |
 
-Then run `compass overview .` in any repository. (A `brew` / `scoop` / `cargo-binstall`
-one-liner is on the roadmap.)
-
-## Build from source
-
-Alternatively, build it yourself. Requires a [Rust toolchain](https://rustup.rs) and a C
-compiler (for the tree-sitter grammars: MSVC Build Tools on Windows, `cc`/Xcode CLT on
-Linux/macOS).
-
-```sh
-cargo build --release
-# binary at target/release/compass
-```
+(A `brew` / `scoop` / `cargo-binstall` one-liner is on the roadmap.)
 
 ## Usage
 
@@ -90,6 +120,9 @@ compass broken path/to/repo
 
 # Keep the map fresh automatically as you edit (Ctrl+C to stop)
 compass watch path/to/repo
+
+# Print the most relevant slice of the map for a task — to pre-inject into an AI prompt
+compass context path/to/repo --query "add a retry to the HTTP client"
 
 # Which languages this build supports
 compass languages
@@ -123,10 +156,33 @@ compass map --snapshot      # write a self-contained .compass/map.html and exit
 > It defaults to an uncommon high port (`62049`) and automatically falls back to a free one
 > if that's busy, so it won't collide with your other servers or containers.
 
-### Using it from an AI assistant (MCP)
+### Using it from an AI assistant
 
-The easy way is `compass init` (above) — it writes the `.mcp.json` below for you. To wire it
-up by hand, Compass is an MCP server over stdio; for a host that uses a JSON config:
+There are two complementary ways to give an AI the map ([ADR-0006](docs/architecture/decisions/0006-context-pre-injection.md)):
+
+**1. Pre-injection (the efficient default).** Inject the relevant slice of the map into the
+prompt *before* the AI reasons, so it goes straight to the right files instead of exploring.
+For **Claude Code**, add this `UserPromptSubmit` hook to your project's `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "compass context --hook" } ] }
+    ]
+  }
+}
+```
+
+`compass context --hook` reads the prompt from stdin, ranks the most relevant files, and prints
+a compact map slice Claude Code adds to the context — no scripting, cross-platform, and
+failure-safe. See [`integrations/claude-code/`](integrations/claude-code/). (A benchmark found
+this is where the token savings actually are — [`docs/benchmarks/`](docs/benchmarks/README.md).)
+
+**2. MCP tools (deepening + any other host).** `compass init` writes the `.mcp.json` below;
+keep it for on-demand deepening (`subgraph`, `shortest_path`, …) when the pre-injected slice
+misses, and as the universal path for non-Claude hosts. To wire it up by hand — Compass is an
+MCP server over stdio:
 
 ```json
 {
@@ -155,7 +211,8 @@ The server exposes these tools:
 2. Detect each file's language (by extension, with a shebang fallback).
 3. Parse each file locally with tree-sitter and extract symbols + imports.
 4. Resolve imports to real files and build a language-agnostic graph.
-5. Serve the graph to humans (CLI) and AI assistants (MCP).
+5. Serve that one graph three ways: a human **visual map** (`compass map`), AI **pre-injection**
+   (`compass context`), and **MCP** tools (`compass serve`).
 
 The architecture — a Cargo workspace with a language-agnostic core and one crate per
 language behind a stable `Extractor` trait — is documented in
