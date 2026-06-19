@@ -52,6 +52,26 @@ deepening** path when the pre-injected slice didn't cover what the agent needs (
 `file_dependencies`, `shortest_path`, …), and it's the **only** integration that works across
 non-Claude hosts (Cursor, etc.) — pre-injection hooks are per-host.
 
+## 3. Slash command — `/compass …` inside a session
+
+Run Compass without leaving your coding session. Copy [`compass.md`](../../.claude/commands/compass.md)
+to your commands dir:
+
+- **This project only:** it already lives at `.claude/commands/compass.md`.
+- **Every project:** copy it to `~/.claude/commands/compass.md`.
+
+Then (after restarting the session so the command is picked up):
+
+```
+/compass init                          # set up the current repo
+/compass map                           # open the live visual map
+/compass context --query "fix the ws reconnect"
+/compass deps src/main.rs
+```
+
+It resolves the `compass` binary (PATH → repo `target/` → `cargo run`), runs long-lived
+commands (`map`/`serve`/`watch`) in the background, and quick ones in the foreground.
+
 ## Why both (the hybrid)
 
 Pre-injection front-loads the common case cheaply; MCP is the escape hatch when the prediction
