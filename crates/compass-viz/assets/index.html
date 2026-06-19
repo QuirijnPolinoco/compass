@@ -7,14 +7,21 @@
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-  <div id="cy"></div>
+  <!-- Cluster "puddle" hulls, drawn behind the graph and synced to its pan/zoom. -->
+  <canvas id="hulls" aria-hidden="true"></canvas>
+  <main id="cy" role="application" aria-label="Codebase map"></main>
 
   <header id="toolbar">
-    <span id="brand">Compass</span>
-    <input id="search" type="search" placeholder="Find a file…" autocomplete="off" spellcheck="false">
+    <span id="brand"><span aria-hidden="true">🧭</span>&nbsp;Compass</span>
+    <div class="search-field">
+      <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
+        <path fill="currentColor" d="M11.74 10.34a6 6 0 1 0-1.4 1.4l3.2 3.2a1 1 0 0 0 1.42-1.42l-3.22-3.18ZM3 7a4 4 0 1 1 8 0 4 4 0 0 1-8 0Z"/>
+      </svg>
+      <input id="search" type="search" placeholder="Find a file…" aria-label="Find a file" autocomplete="off" spellcheck="false">
+    </div>
     <label class="control">
       <span>Color</span>
-      <select id="color-mode">
+      <select id="color-mode" aria-label="Color nodes by">
         <option value="group">Sub-part</option>
         <option value="folder">Folder</option>
         <option value="language">Language</option>
@@ -24,10 +31,27 @@
       <input id="symbols" type="checkbox">
       <span>Symbols</span>
     </label>
-    <button id="fit" type="button" title="Fit graph to view">Fit</button>
+    <button id="fit" type="button" aria-label="Fit the whole graph to view">Fit</button>
   </header>
 
-  <div id="status"><span id="counts"></span><span id="live" class="off">offline</span></div>
+  <aside id="legend" aria-label="Color legend" hidden></aside>
+
+  <div id="tooltip" role="tooltip" hidden></div>
+
+  <div id="loading"><span class="spinner" aria-hidden="true"></span>Mapping the repository…</div>
+
+  <section id="empty" hidden>
+    <div class="empty-card">
+      <div class="empty-icon" aria-hidden="true">🧭</div>
+      <h1>Nothing to map</h1>
+      <p>Compass found no files in a supported language here. Run <code>compass languages</code> to see what's supported.</p>
+    </div>
+  </section>
+
+  <footer id="status" aria-live="polite">
+    <span id="counts"></span>
+    <span id="live" class="off">offline</span>
+  </footer>
 
   <script src="/vendor/cytoscape.min.js"></script>
   <script src="/app.js"></script>
