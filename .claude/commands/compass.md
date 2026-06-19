@@ -1,6 +1,6 @@
 ---
-description: Run the Compass repo-map CLI (init, map, overview, context, deps, broken, watch, serve, languages)
-argument-hint: <subcommand> [args]   — e.g. `map`, `init`, `context --query "..."`, `deps src/main.rs`
+description: Run the Compass repo-map CLI
+argument-hint: init | map | context | overview | deps | broken | watch | serve | languages
 allowed-tools: Bash
 ---
 Run the **Compass** repo-map CLI with these arguments: `$ARGUMENTS`
