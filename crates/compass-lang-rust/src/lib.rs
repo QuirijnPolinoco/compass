@@ -7,11 +7,13 @@
 //! Two kinds of Rust dependency become edges:
 //! - **Intra-crate**: `mod foo;` resolves to a file (`foo.rs` or `foo/mod.rs`) by the 2018
 //!   module convention.
-//! - **Cross-crate**: `use <crate>::…` / `extern crate <crate>;` resolves to that crate's
-//!   library root (`…/src/lib.rs`) when `<crate>` is a member of the Cargo workspace. The
+//! - **Cross-crate**: `use <crate>::…` / `extern crate <crate>;` **and** fully-qualified path
+//!   references with no `use` (e.g. `apis_core::Price(..)`) resolve to that crate's library
+//!   root (`…/src/lib.rs`) when `<crate>` is a member of the Cargo workspace. The
 //!   crate-name → lib-root map is read once from the `Cargo.toml`s under the repo root.
 //!   `std`/third-party crates resolve as [`ResolvedImport::External`] (no edge, no
-//!   diagnostic); `crate`/`self`/`super` self-references are ignored.
+//!   diagnostic); `crate`/`self`/`super` self-references and non-crate path roots
+//!   (`String::new`, `Vec::<T>`) are ignored.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -369,6 +371,24 @@ fn visit(
         "const_item" | "static_item" => {
             push_named(node, "name", SymbolKind::Constant, src, symbols)
         }
+        // Cross-crate refs written as a fully-qualified PATH with no `use`, e.g.
+        // `apis_core::Price(..)`. Capture the leading segment when it looks like a crate
+        // (lowercase — so `String::new`/`Vec::<T>`/`Self::` are skipped); `resolve` keeps
+        // only the ones that are workspace crates. Falls through to recurse, so a crate ref
+        // nested in generics (`Vec<other::Thing>`) is still caught.
+        "scoped_identifier" | "scoped_type_identifier" => {
+            if let Some(root) = node
+                .utf8_text(src)
+                .ok()
+                .and_then(crate_root_of)
+                .filter(|r| r.starts_with(|c: char| c.is_ascii_lowercase()))
+            {
+                imports.push(RawImport {
+                    specifier: format!("{USE_PREFIX}{root}"),
+                    span: span_of(node),
+                });
+            }
+        }
         _ => {}
     }
     recurse(node, src, in_impl, symbols, imports);
@@ -548,15 +568,40 @@ fn main() {
     }
 
     #[test]
-    fn extracts_all_imports_in_order() {
-        let specs: Vec<String> = extract(SAMPLE)
+    fn extracts_mod_imports_in_order() {
+        // File-backed `mod foo;` declarations only (bare specifiers, no `use:` sentinel), in
+        // source order; the inline `mod inline { .. }` is not an import.
+        let mods: Vec<String> = extract(SAMPLE)
+            .imports
+            .into_iter()
+            .map(|i| i.specifier)
+            .filter(|s| !s.starts_with(USE_PREFIX))
+            .collect();
+        assert_eq!(mods, ["util", "missing"]);
+    }
+
+    #[test]
+    fn captures_path_qualified_crate_usage_without_use() {
+        // A crate referenced via a fully-qualified path with NO `use` — the case Compass used
+        // to miss. `String::new()` (uppercase) is not captured; `self.x` is not a crate path.
+        let src = r#"
+fn build() -> apis_core::Money {
+    let p = apis_core::Price(1);
+    let v: Vec<other_crate::Tick> = Vec::new();
+    String::new();
+    p
+}
+"#;
+        let specs: Vec<String> = extract(src)
             .imports
             .into_iter()
             .map(|i| i.specifier)
             .collect();
-        // File-backed `mod foo;` declarations (in source order), then the `use` crate root
-        // (`use:` sentinel). The inline `mod inline { .. }` is not an import.
-        assert_eq!(specs, ["util", "missing", "use:std"]);
+        assert!(specs.contains(&"use:apis_core".to_string()));
+        assert!(specs.contains(&"use:other_crate".to_string())); // nested in a generic
+        assert!(!specs.iter().any(|s| s.contains("String")));
+        // Deduped: `apis_core` appears 3× in source but once in imports.
+        assert_eq!(specs.iter().filter(|s| *s == "use:apis_core").count(), 1);
     }
 
     #[test]
