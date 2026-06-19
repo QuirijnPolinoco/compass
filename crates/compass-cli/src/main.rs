@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use compass_core::{Graph, MapQuery};
+use compass_core::{ContextPack, ContextRequest, Graph, MapQuery};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         "broken" => run_broken(&path),
         "watch" => run_watch(&path),
         "map" => run_map(&args[1..]),
+        "context" => run_context(&args[1..]),
         "serve" => run_serve(&path),
         "help" | "-h" | "--help" => {
             print_help();
@@ -367,6 +368,104 @@ fn open_browser(url: &str) {
     let _ = result;
 }
 
+/// `compass context` — print a token-bounded context pack for **pre-injection** into an AI
+/// prompt (ADR-0006): a structural summary + the most relevant files. `--query` ranks by the
+/// task text; `--file` seeds the blast-radius around files being worked on; otherwise the
+/// most-connected files are returned.
+fn run_context(args: &[String]) -> ExitCode {
+    let mut path = PathBuf::from(".");
+    let mut query: Option<String> = None;
+    let mut seeds: Vec<String> = Vec::new();
+    let mut max_files = 12usize;
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--query" | "-q" => query = iter.next().cloned(),
+            "--file" | "-f" => {
+                if let Some(f) = iter.next() {
+                    seeds.push(f.clone());
+                }
+            }
+            "--max" => {
+                max_files = iter
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(max_files)
+            }
+            other if other.starts_with("--query=") => {
+                query = Some(other["--query=".len()..].to_string())
+            }
+            other if other.starts_with("--max=") => {
+                if let Ok(n) = other["--max=".len()..].parse() {
+                    max_files = n;
+                }
+            }
+            other if other.starts_with('-') => {
+                eprintln!("compass: unknown option `{other}` for `context`");
+                return ExitCode::FAILURE;
+            }
+            other => path = PathBuf::from(other),
+        }
+    }
+
+    let Some(graph) = build_graph(&path) else {
+        return ExitCode::FAILURE;
+    };
+    let pack = graph.context(&ContextRequest {
+        query,
+        seeds,
+        max_files,
+    });
+    print!("{}", render_context_markdown(&path, &pack));
+    ExitCode::SUCCESS
+}
+
+/// Render a context pack as a compact markdown block suitable for prompt injection.
+fn render_context_markdown(path: &Path, pack: &ContextPack) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let langs = pack
+        .languages
+        .iter()
+        .map(|l| format!("{} {}", l.language.as_str(), l.file_count))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(
+        out,
+        "# Compass map — {} ({} files; {})",
+        path.display(),
+        pack.file_count,
+        langs
+    );
+    if !pack.most_connected.is_empty() {
+        let mc = pack
+            .most_connected
+            .iter()
+            .take(5)
+            .map(|c| c.file.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(out, "Most-connected: {mc}");
+    }
+    let _ = writeln!(out, "\nRelevant files (selected by {}):", pack.selected_by);
+    for f in &pack.files {
+        let lang = f.language.as_deref().unwrap_or("?");
+        let mut line = format!("- {} [{lang}]", f.path);
+        if !f.symbols.is_empty() {
+            let _ = write!(line, " — symbols: {}", f.symbols.join(", "));
+        }
+        if !f.depends_on.is_empty() {
+            let _ = write!(line, " — imports: {}", f.depends_on.join(", "));
+        }
+        if !f.dependents.is_empty() {
+            let _ = write!(line, " — imported by: {}", f.dependents.join(", "));
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    out
+}
+
 fn run_serve(path: &Path) -> ExitCode {
     let Some(graph) = build_graph(path) else {
         return ExitCode::FAILURE;
@@ -389,6 +488,10 @@ fn print_help() {
     println!("  compass watch [PATH]       Re-map the repo automatically as files change");
     println!("  compass map [PATH]         Open an interactive, live visual map in the browser");
     println!("                             (--port N, --no-open, --snapshot for a static .html)");
+    println!(
+        "  compass context [PATH]     Print a relevant map slice to pre-inject into an AI prompt"
+    );
+    println!("                             (--query \"task\", --file PATH (repeatable), --max N)");
     println!("  compass languages          List supported languages");
     println!("  compass serve [PATH]       Run the MCP server over stdio (for AI hosts)");
     println!("  compass help               Show this help");

@@ -388,6 +388,11 @@ pub trait MapQuery {
     /// The shortest import path connecting `from` to `to` (treated as undirected) —
     /// "what connects X to Y" (FR-17/E1). `None` if either is unmapped or unconnected.
     fn shortest_path(&self, from: &str, to: &str) -> Option<Vec<String>>;
+    /// A token-bounded slice of the map to **pre-inject** into an AI prompt so it reasons
+    /// instead of exploring (ADR-0006): a structural summary plus the most relevant files
+    /// (by seed-neighborhood, query-term match, or centrality), each with its symbols and
+    /// imports/dependents.
+    fn context(&self, request: &ContextRequest) -> ContextPack;
 }
 
 /// A high-level summary of the map (FR-3/B1, the `overview` MCP tool).
@@ -498,6 +503,43 @@ pub struct Subgraph {
     pub files: Vec<String>,
     /// Import edges among those files, as `(from, to)` repo-relative paths, sorted.
     pub imports: Vec<(String, String)>,
+}
+
+/// What to select for a pre-injection context pack (ADR-0006).
+#[derive(Debug, Clone, Default)]
+pub struct ContextRequest {
+    /// Free-text task/prompt; files are ranked by term matches on path + symbol names.
+    pub query: Option<String>,
+    /// Repo-relative files the agent is working on; their 1-hop neighborhood is selected.
+    pub seeds: Vec<String>,
+    /// Cap on how many files to include (keeps the pack small).
+    pub max_files: usize,
+}
+
+/// One file in a context pack: enough to reason about it without opening it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextFile {
+    pub path: String,
+    pub language: Option<String>,
+    /// Defined symbol names (capped).
+    pub symbols: Vec<String>,
+    /// Files this file imports.
+    pub depends_on: Vec<String>,
+    /// Files that import this file (capped).
+    pub dependents: Vec<String>,
+}
+
+/// A token-bounded slice of the map to pre-inject into a prompt (ADR-0006).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPack {
+    pub file_count: usize,
+    pub languages: Vec<LanguageStat>,
+    /// The most-connected files overall (a structural primer).
+    pub most_connected: Vec<ConnectedFile>,
+    /// The selected relevant files.
+    pub files: Vec<ContextFile>,
+    /// How `files` were selected ("seeds", "query", or "most-connected").
+    pub selected_by: String,
 }
 
 impl MapQuery for Graph {
@@ -792,6 +834,185 @@ impl MapQuery for Graph {
                 .collect(),
         )
     }
+
+    fn context(&self, request: &ContextRequest) -> ContextPack {
+        let max = request.max_files.max(1);
+        let (ids, selected_by) = if !request.seeds.is_empty() {
+            (self.context_by_seeds(&request.seeds, max), "seeds")
+        } else if let Some(q) = request.query.as_deref().filter(|q| !q.trim().is_empty()) {
+            let ranked = self.context_by_query(q, max);
+            if ranked.is_empty() {
+                (self.most_connected_ids(max), "most-connected")
+            } else {
+                (ranked, "query")
+            }
+        } else {
+            (self.most_connected_ids(max), "most-connected")
+        };
+
+        let files = ids.iter().map(|&id| self.context_file(id)).collect();
+        let overview = self.overview();
+        ContextPack {
+            file_count: overview.file_count,
+            languages: overview.languages,
+            most_connected: overview.most_connected,
+            files,
+            selected_by: selected_by.to_string(),
+        }
+    }
+}
+
+impl Graph {
+    /// File import degree (in + out), keyed by `FileId`.
+    fn degrees(&self) -> HashMap<FileId, usize> {
+        let mut deg: HashMap<FileId, usize> = HashMap::new();
+        for &(a, b) in &self.imports {
+            *deg.entry(a).or_insert(0) += 1;
+            *deg.entry(b).or_insert(0) += 1;
+        }
+        deg
+    }
+
+    /// The `max` most import-connected files (degree desc, id as tiebreak).
+    fn most_connected_ids(&self, max: usize) -> Vec<FileId> {
+        let deg = self.degrees();
+        let mut ids: Vec<FileId> = (0..self.files.len() as u32).map(FileId).collect();
+        ids.sort_by(|&a, &b| {
+            let (da, db) = (
+                deg.get(&a).copied().unwrap_or(0),
+                deg.get(&b).copied().unwrap_or(0),
+            );
+            db.cmp(&da).then(a.0.cmp(&b.0))
+        });
+        ids.truncate(max);
+        ids
+    }
+
+    /// Seed files first, then their import neighbors (by degree) — the blast radius.
+    fn context_by_seeds(&self, seeds: &[String], max: usize) -> Vec<FileId> {
+        let adj = self.import_adjacency();
+        let seed_ids: Vec<FileId> = seeds
+            .iter()
+            .filter_map(|s| self.file_id(Path::new(s)))
+            .collect();
+        let mut seen: HashSet<FileId> = HashSet::new();
+        let mut ordered: Vec<FileId> = Vec::new();
+        for &id in &seed_ids {
+            if seen.insert(id) {
+                ordered.push(id);
+            }
+        }
+        let mut neighbors: Vec<FileId> = Vec::new();
+        for &id in &seed_ids {
+            for &nb in &adj[id.0 as usize] {
+                if !seen.contains(&nb) && !neighbors.contains(&nb) {
+                    neighbors.push(nb);
+                }
+            }
+        }
+        neighbors.sort_by(|&a, &b| {
+            adj[b.0 as usize]
+                .len()
+                .cmp(&adj[a.0 as usize].len())
+                .then(a.0.cmp(&b.0))
+        });
+        for id in neighbors {
+            if ordered.len() >= max {
+                break;
+            }
+            ordered.push(id);
+        }
+        ordered.truncate(max);
+        ordered
+    }
+
+    /// Files ranked by query-term matches against path + symbol names (centrality tiebreak).
+    fn context_by_query(&self, query: &str, max: usize) -> Vec<FileId> {
+        let terms = tokenize(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let deg = self.degrees();
+        let mut syms_by_file: HashMap<FileId, Vec<String>> = HashMap::new();
+        for s in &self.symbols {
+            syms_by_file
+                .entry(s.file)
+                .or_default()
+                .push(s.name.to_lowercase());
+        }
+
+        let mut scored: Vec<(f64, FileId)> = Vec::new();
+        for f in &self.files {
+            let path = f.path.to_string_lossy().to_lowercase();
+            let mut score = 0.0;
+            for t in &terms {
+                // A path/name match is the strongest signal that this file IS the target.
+                if path.contains(t) {
+                    score += 5.0;
+                }
+                // Symbol-name matches help, but cap per term so a big file full of `*_order`
+                // symbols can't outrank the conceptually-relevant file (no raw term-frequency).
+                if let Some(syms) = syms_by_file.get(&f.id) {
+                    let hits = syms.iter().filter(|n| n.contains(t)).count().min(3);
+                    score += hits as f64;
+                }
+            }
+            if score > 0.0 {
+                score += deg.get(&f.id).copied().unwrap_or(0) as f64 * 0.1;
+                scored.push((score, f.id));
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1 .0.cmp(&b.1 .0))
+        });
+        scored.into_iter().take(max).map(|(_, id)| id).collect()
+    }
+
+    /// Build a [`ContextFile`] (symbols + deps/dependents) for one file.
+    fn context_file(&self, id: FileId) -> ContextFile {
+        let path = self
+            .file_path(id)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let language = self
+            .files
+            .get(id.0 as usize)
+            .map(|f| f.language.as_str().to_string());
+        let mut symbols: Vec<String> = self
+            .symbols
+            .iter()
+            .filter(|s| s.file == id)
+            .map(|s| s.name.clone())
+            .collect();
+        symbols.truncate(15);
+
+        let (mut depends_on, mut dependents) = (Vec::new(), Vec::new());
+        if let Some(fd) = self.file_dependencies(&path) {
+            depends_on = fd.dependencies;
+            dependents = fd.dependents;
+            dependents.truncate(25);
+        }
+        ContextFile {
+            path,
+            language,
+            symbols,
+            depends_on,
+            dependents,
+        }
+    }
+}
+
+/// Distinct lowercased query terms of length ≥ 3 (split on non-alphanumerics).
+fn tokenize(query: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(|w| w.to_lowercase())
+        .filter(|w| seen.insert(w.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -984,5 +1205,54 @@ mod tests {
             vec!["src/ui/page.rs".to_string()]
         );
         assert!(g.shortest_path("src/ui/page.rs", "nope.rs").is_none());
+    }
+
+    #[test]
+    fn context_by_query_ranks_matching_files() {
+        let g = bridged_graph();
+        let pack = g.context(&ContextRequest {
+            query: Some("auth".into()),
+            seeds: vec![],
+            max_files: 3,
+        });
+        assert_eq!(pack.selected_by, "query");
+        assert_eq!(pack.file_count, 8);
+        // Only the src/auth/* files match the term.
+        assert!(pack.files.iter().all(|f| f.path.contains("auth")));
+        assert!(pack.files.iter().any(|f| f.path == "src/auth/login.rs"));
+    }
+
+    #[test]
+    fn context_by_seeds_returns_the_neighborhood() {
+        let g = bridged_graph();
+        let pack = g.context(&ContextRequest {
+            query: None,
+            seeds: vec!["src/auth/login.rs".into()],
+            max_files: 5,
+        });
+        assert_eq!(pack.selected_by, "seeds");
+        let paths: Vec<&str> = pack.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"src/auth/login.rs")); // the seed itself
+        assert!(paths.contains(&"src/util/log.rs")); // a 1-hop neighbor
+                                                     // The seed's ContextFile carries its dependencies (login imports token/session/util).
+        let seed = pack
+            .files
+            .iter()
+            .find(|f| f.path == "src/auth/login.rs")
+            .unwrap();
+        assert!(seed.depends_on.contains(&"src/util/log.rs".to_string()));
+    }
+
+    #[test]
+    fn context_defaults_to_most_connected() {
+        let g = bridged_graph();
+        let pack = g.context(&ContextRequest {
+            query: None,
+            seeds: vec![],
+            max_files: 2,
+        });
+        assert_eq!(pack.selected_by, "most-connected");
+        assert_eq!(pack.files.len(), 2);
+        assert_eq!(pack.file_count, 8);
     }
 }
