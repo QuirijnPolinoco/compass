@@ -377,10 +377,17 @@ fn run_context(args: &[String]) -> ExitCode {
     let mut query: Option<String> = None;
     let mut seeds: Vec<String> = Vec::new();
     let mut max_files = 12usize;
+    let mut hook = false;
+    let mut fresh = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            // Read the prompt (and cwd) from a Claude Code UserPromptSubmit JSON on stdin,
+            // so the hook needs no shell scripting: `compass context --hook`.
+            "--hook" => hook = true,
+            // Force a fresh index instead of loading the `.compass/` cache.
+            "--fresh" => fresh = true,
             "--query" | "-q" => query = iter.next().cloned(),
             "--file" | "-f" => {
                 if let Some(f) = iter.next() {
@@ -409,8 +416,40 @@ fn run_context(args: &[String]) -> ExitCode {
         }
     }
 
-    let Some(graph) = build_graph(&path) else {
-        return ExitCode::FAILURE;
+    if hook {
+        // UserPromptSubmit payload: { "prompt": "...", "cwd": "...", ... }. Pull the prompt
+        // (as the query) and the cwd (if no PATH was given). Anything missing → just skip.
+        use std::io::Read as _;
+        let mut buf = String::new();
+        if std::io::stdin().read_to_string(&mut buf).is_ok() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&buf) {
+                if query.is_none() {
+                    query = v.get("prompt").and_then(|p| p.as_str()).map(String::from);
+                }
+                if path.as_path() == Path::new(".") {
+                    if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+                        path = PathBuf::from(cwd);
+                    }
+                }
+            }
+        }
+    }
+
+    // Prefer the cached graph so per-prompt injection is fast (a full re-index every prompt
+    // would tax a large repo). `--fresh` forces re-indexing; `compass init`/`watch` keep the
+    // cache current. In hook mode a failure must never block the user's prompt — exit 0 silent.
+    let graph = if fresh {
+        None
+    } else {
+        compass_engine::cache::load(&path)
+    }
+    .or_else(|| build_graph(&path));
+    let Some(graph) = graph else {
+        return if hook {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     };
     let pack = graph.context(&ContextRequest {
         query,
@@ -491,7 +530,7 @@ fn print_help() {
     println!(
         "  compass context [PATH]     Print a relevant map slice to pre-inject into an AI prompt"
     );
-    println!("                             (--query \"task\", --file PATH (repeatable), --max N)");
+    println!("                             (--query \"task\" | --file PATH... | --hook; --max N, --fresh)");
     println!("  compass languages          List supported languages");
     println!("  compass serve [PATH]       Run the MCP server over stdio (for AI hosts)");
     println!("  compass help               Show this help");
