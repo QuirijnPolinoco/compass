@@ -1,11 +1,11 @@
 {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local-first tool that maps a codebase into a queryable graph for AI and humans",
   "homepage": "https://github.com/QuirijnPolinoco/compass",
   "license": "MIT OR Apache-2.0",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/QuirijnPolinoco/compass/releases/download/v0.4.0/compass-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/QuirijnPolinoco/compass/releases/download/v0.5.0/compass-x86_64-pc-windows-msvc.zip",
       "hash": "REPLACE_WITH_x86_64-pc-windows-msvc_SHA256",
       "bin": "compass.exe"
     }
