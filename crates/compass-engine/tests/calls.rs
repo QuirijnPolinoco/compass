@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use compass_core::Graph;
+use compass_core::{EdgeConfidence, Graph};
 use compass_extract::Registry;
 
 /// Build a registry with only the Rust extractor and index `dir`.
@@ -34,13 +34,38 @@ fn readable_calls(graph: &Graph) -> Vec<(String, String)> {
     let mut edges: Vec<(String, String)> = graph
         .calls()
         .iter()
-        .map(|&(from, to)| {
+        .map(|&(from, to, _)| {
             let (_, caller) = &by_id[&from];
             let (file, callee) = &by_id[&to];
             (caller.clone(), format!("{file}::{callee}"))
         })
         .collect();
     edges.sort();
+    edges
+}
+
+/// Like [`readable_calls`], but also carries each edge's [`EdgeConfidence`] so a test can
+/// assert that a same-file call is `Resolved` and a unique-global call is `Heuristic`.
+fn readable_calls_with_confidence(graph: &Graph) -> Vec<(String, String, EdgeConfidence)> {
+    let mut by_id = HashMap::new();
+    for s in graph.symbols() {
+        let file = graph
+            .file_path(s.file)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        by_id.insert(s.id, (file, s.name.clone()));
+    }
+    let mut edges: Vec<(String, String, EdgeConfidence)> = graph
+        .calls()
+        .iter()
+        .map(|&(from, to, confidence)| {
+            let (_, caller) = &by_id[&from];
+            let (file, callee) = &by_id[&to];
+            (caller.clone(), format!("{file}::{callee}"), confidence)
+        })
+        .collect();
+    // EdgeConfidence isn't Ord, so sort by the readable (caller, target) pair only.
+    edges.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
     edges
 }
 
@@ -83,6 +108,46 @@ fn resolves_same_file_unique_global_and_skips_ambiguous() {
             // NOTE: c.rs's `orphan` → `shared` is absent — ambiguous, correctly skipped.
         ],
         "resolved calls (orphan→shared must be dropped as ambiguous):\n{calls:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn same_file_call_is_resolved_and_unique_global_call_is_heuristic() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-confidence");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // a.rs: `helper` is defined here; `alpha` calls it (same-file → Resolved).
+    std::fs::write(
+        dir.join("a.rs"),
+        "fn helper() {}\nfn alpha() { helper(); }\n",
+    )
+    .unwrap();
+    // b.rs: `beta` calls `helper`, which is defined only in a.rs → unique global → Heuristic.
+    std::fs::write(dir.join("b.rs"), "fn beta() { helper(); }\n").unwrap();
+
+    let graph = index_rust(&dir);
+    let calls = readable_calls_with_confidence(&graph);
+
+    assert_eq!(
+        calls,
+        [
+            // same-file: a.rs's `alpha` → a.rs's `helper` is provable → Resolved.
+            (
+                "alpha".to_string(),
+                "a.rs::helper".to_string(),
+                EdgeConfidence::Resolved,
+            ),
+            // unique global: b.rs's `beta` → the only `helper` (in a.rs) is a guess → Heuristic.
+            (
+                "beta".to_string(),
+                "a.rs::helper".to_string(),
+                EdgeConfidence::Heuristic,
+            ),
+        ],
+        "call-edge confidence (same-file Resolved, unique-global Heuristic):\n{calls:#?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

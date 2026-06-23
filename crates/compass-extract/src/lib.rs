@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use compass_core::{FileId, LanguageId, Span, SymbolKind};
+use compass_core::{EdgeConfidence, FileId, LanguageId, Span, SymbolKind};
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Parser, Tree};
 
@@ -59,8 +59,16 @@ pub struct Extraction {
 /// Outcome of resolving one raw import in the `resolve` phase.
 #[derive(Debug, Clone)]
 pub enum ResolvedImport {
-    /// Points at a real in-repo file -> becomes an `Imports` edge.
-    Resolved { target: FileId, span: Span },
+    /// Points at a real in-repo file -> becomes an `Imports` edge. `confidence` records how the
+    /// resolver found the target: [`EdgeConfidence::Resolved`] for a path-exact hit (a file that
+    /// provably exists), [`EdgeConfidence::Heuristic`] for a convention-based guess (e.g. a
+    /// namespace mapped to a directory). Use the [`resolved`](Self::resolved) /
+    /// [`heuristic`](Self::heuristic) constructors rather than building this directly.
+    Resolved {
+        target: FileId,
+        span: Span,
+        confidence: EdgeConfidence,
+    },
     /// Looked internal but matched no file -> becomes a broken-import diagnostic (FR-12/D2).
     Unresolved {
         specifier: String,
@@ -69,6 +77,28 @@ pub enum ResolvedImport {
     },
     /// Resolved as out-of-repo (stdlib / third-party) -> no edge, no diagnostic.
     External { specifier: String },
+}
+
+impl ResolvedImport {
+    /// A path-exact import: the target file provably exists (relative path, `mod`/`include`,
+    /// tsconfig alias, …). Tagged [`EdgeConfidence::Resolved`].
+    pub fn resolved(target: FileId, span: Span) -> Self {
+        ResolvedImport::Resolved {
+            target,
+            span,
+            confidence: EdgeConfidence::Resolved,
+        }
+    }
+
+    /// A convention-based import: the target is a best-effort guess (e.g. namespace→directory).
+    /// Tagged [`EdgeConfidence::Heuristic`].
+    pub fn heuristic(target: FileId, span: Span) -> Self {
+        ResolvedImport::Resolved {
+            target,
+            span,
+            confidence: EdgeConfidence::Heuristic,
+        }
+    }
 }
 
 /// Opaque per-language configuration carrier (e.g. derived from `.compass.toml`).

@@ -60,10 +60,7 @@ impl Extractor for CExtractor {
             .map(|imp| {
                 let candidate = resolve_path(&current_dir, &imp.specifier);
                 match ctx.file_by_path(Path::new(&candidate)) {
-                    Some(target) => ResolvedImport::Resolved {
-                        target,
-                        span: imp.span,
-                    },
+                    Some(target) => ResolvedImport::resolved(target, imp.span),
                     // Include paths are flexible (`-I` dirs); don't flag broken.
                     None => ResolvedImport::External {
                         specifier: imp.specifier.clone(),

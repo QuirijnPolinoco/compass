@@ -69,19 +69,13 @@ impl Extractor for KotlinExtractor {
                     });
                 } else {
                     for target in files {
-                        resolved.push(ResolvedImport::Resolved {
-                            target,
-                            span: imp.span,
-                        });
+                        resolved.push(ResolvedImport::resolved(target, imp.span));
                     }
                 }
             } else {
                 let candidate = format!("{}.kt", join(&root, &spec.replace('.', "/")));
                 match ctx.file_by_path(Path::new(&candidate)) {
-                    Some(target) => resolved.push(ResolvedImport::Resolved {
-                        target,
-                        span: imp.span,
-                    }),
+                    Some(target) => resolved.push(ResolvedImport::resolved(target, imp.span)),
                     None => resolved.push(ResolvedImport::External {
                         specifier: imp.specifier.clone(),
                     }),

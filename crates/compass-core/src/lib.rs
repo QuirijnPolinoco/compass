@@ -37,6 +37,22 @@ pub struct FileId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SymbolId(pub u32);
 
+/// How sure we are that an edge (import or call) points at the right target.
+///
+/// `Resolved` is deterministic — a path-exact import (relative path, `mod`/`include`,
+/// tsconfig alias) or a same-file call. `Heuristic` is a convention-based guess — a
+/// namespace-to-directory mapping (C#/Java) or a call matched only by a globally-unique
+/// name — correct in practice but not provable from the source alone. The visual map
+/// renders heuristic edges distinctly so a human can tell guesses from certainties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EdgeConfidence {
+    /// Deterministic: path-exact import or same-file call.
+    #[default]
+    Resolved,
+    /// Convention-based guess: namespace→directory, or a unique-global-name call.
+    Heuristic,
+}
+
 /// A mapped source file (graph node).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
@@ -105,9 +121,9 @@ pub struct Diagnostic {
 pub struct Graph {
     files: Vec<File>,
     symbols: Vec<Symbol>,
-    imports: Vec<(FileId, FileId)>,
+    imports: Vec<(FileId, FileId, EdgeConfidence)>,
     defines: Vec<(FileId, SymbolId)>,
-    calls: Vec<(SymbolId, SymbolId)>,
+    calls: Vec<(SymbolId, SymbolId, EdgeConfidence)>,
     diagnostics: Vec<Diagnostic>,
     #[serde(skip)]
     by_path: HashMap<PathBuf, FileId>,
@@ -149,12 +165,12 @@ impl Graph {
         id
     }
 
-    pub fn add_import(&mut self, from: FileId, to: FileId) {
-        self.imports.push((from, to));
+    pub fn add_import(&mut self, from: FileId, to: FileId, confidence: EdgeConfidence) {
+        self.imports.push((from, to, confidence));
     }
 
-    pub fn add_call(&mut self, from: SymbolId, to: SymbolId) {
-        self.calls.push((from, to));
+    pub fn add_call(&mut self, from: SymbolId, to: SymbolId, confidence: EdgeConfidence) {
+        self.calls.push((from, to, confidence));
     }
 
     pub fn add_diagnostic(&mut self, diagnostic: Diagnostic) {
@@ -169,13 +185,14 @@ impl Graph {
         &self.symbols
     }
 
-    pub fn imports(&self) -> &[(FileId, FileId)] {
+    pub fn imports(&self) -> &[(FileId, FileId, EdgeConfidence)] {
         &self.imports
     }
 
-    /// Resolved symbol→symbol call edges (caller, callee). Populated by the engine from each
-    /// extractor's raw calls; only unambiguous targets become edges (see `compass-engine`).
-    pub fn calls(&self) -> &[(SymbolId, SymbolId)] {
+    /// Resolved symbol→symbol call edges (caller, callee, confidence). Populated by the engine
+    /// from each extractor's raw calls; only unambiguous targets become edges, with a same-file
+    /// hit `Resolved` and a unique-global hit `Heuristic` (see `compass-engine`).
+    pub fn calls(&self) -> &[(SymbolId, SymbolId, EdgeConfidence)] {
         &self.calls
     }
 
@@ -201,7 +218,7 @@ impl Graph {
     /// Undirected adjacency over import edges, indexed by `FileId.0`. Self-loops dropped.
     fn import_adjacency(&self) -> Vec<Vec<FileId>> {
         let mut adj: Vec<Vec<FileId>> = vec![Vec::new(); self.files.len()];
-        for &(a, b) in &self.imports {
+        for &(a, b, _) in &self.imports {
             if a == b {
                 continue;
             }
@@ -489,6 +506,9 @@ pub struct GraphEdge {
     pub source: String,
     pub target: String,
     pub kind: EdgeKind,
+    /// How sure we are this edge points at the right target. `Defines` edges are always
+    /// `Resolved`; `Import`/`Calls` edges carry the confidence the engine resolved them with.
+    pub confidence: EdgeConfidence,
 }
 
 /// The whole map as nodes + edges, ready to render (FR-20, ADR-0005).
@@ -567,7 +587,7 @@ impl MapQuery for Graph {
                 .then_with(|| a.language.as_str().cmp(b.language.as_str()))
         });
         let mut degree: HashMap<FileId, usize> = HashMap::new();
-        for (from, to) in &self.imports {
+        for (from, to, _) in &self.imports {
             *degree.entry(*from).or_insert(0) += 1;
             *degree.entry(*to).or_insert(0) += 1;
         }
@@ -603,8 +623,8 @@ impl MapQuery for Graph {
         let mut dependencies: Vec<String> = self
             .imports
             .iter()
-            .filter(|(from, _)| *from == fid)
-            .filter_map(|(_, to)| self.file_path(*to))
+            .filter(|(from, _, _)| *from == fid)
+            .filter_map(|(_, to, _)| self.file_path(*to))
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         dependencies.sort();
@@ -613,8 +633,8 @@ impl MapQuery for Graph {
         let mut dependents: Vec<String> = self
             .imports
             .iter()
-            .filter(|(_, to)| *to == fid)
-            .filter_map(|(from, _)| self.file_path(*from))
+            .filter(|(_, to, _)| *to == fid)
+            .filter_map(|(from, _, _)| self.file_path(*from))
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         dependents.sort();
@@ -646,7 +666,7 @@ impl MapQuery for Graph {
 
         // File import degree (in + out), for node sizing.
         let mut file_degree: HashMap<FileId, usize> = HashMap::new();
-        for &(a, b) in &self.imports {
+        for &(a, b, _) in &self.imports {
             *file_degree.entry(a).or_insert(0) += 1;
             *file_degree.entry(b).or_insert(0) += 1;
         }
@@ -678,12 +698,13 @@ impl MapQuery for Graph {
         }
 
         let mut edges: Vec<GraphEdge> = Vec::new();
-        for &(a, b) in &self.imports {
+        for &(a, b, confidence) in &self.imports {
             if let (Some(source), Some(target)) = (path_of(a), path_of(b)) {
                 edges.push(GraphEdge {
                     source,
                     target,
                     kind: EdgeKind::Import,
+                    confidence,
                 });
             }
         }
@@ -691,7 +712,7 @@ impl MapQuery for Graph {
         if include_symbols {
             // Symbol call degree (in + out), for sizing.
             let mut sym_degree: HashMap<SymbolId, usize> = HashMap::new();
-            for &(a, b) in &self.calls {
+            for &(a, b, _) in &self.calls {
                 *sym_degree.entry(a).or_insert(0) += 1;
                 *sym_degree.entry(b).or_insert(0) += 1;
             }
@@ -718,14 +739,17 @@ impl MapQuery for Graph {
                         source,
                         target: format!("sym:{}", s.0),
                         kind: EdgeKind::Defines,
+                        // A file provably defines its own symbols.
+                        confidence: EdgeConfidence::Resolved,
                     });
                 }
             }
-            for &(a, b) in &self.calls {
+            for &(a, b, confidence) in &self.calls {
                 edges.push(GraphEdge {
                     source: format!("sym:{}", a.0),
                     target: format!("sym:{}", b.0),
                     kind: EdgeKind::Calls,
+                    confidence,
                 });
             }
         }
@@ -770,8 +794,8 @@ impl MapQuery for Graph {
         let mut imports: Vec<(String, String)> = self
             .imports
             .iter()
-            .filter(|(a, b)| seen[a.0 as usize] && seen[b.0 as usize])
-            .filter_map(|(a, b)| {
+            .filter(|(a, b, _)| seen[a.0 as usize] && seen[b.0 as usize])
+            .filter_map(|(a, b, _)| {
                 let from = self.file_path(*a)?.to_string_lossy().into_owned();
                 let to = self.file_path(*b)?.to_string_lossy().into_owned();
                 Some((from, to))
@@ -872,7 +896,7 @@ impl Graph {
     /// File import degree (in + out), keyed by `FileId`.
     fn degrees(&self) -> HashMap<FileId, usize> {
         let mut deg: HashMap<FileId, usize> = HashMap::new();
-        for &(a, b) in &self.imports {
+        for &(a, b, _) in &self.imports {
             *deg.entry(a).or_insert(0) += 1;
             *deg.entry(b).or_insert(0) += 1;
         }
@@ -1042,18 +1066,19 @@ mod tests {
         let conn = f(&mut g, "src/db/conn.rs"); // 6
         let query = f(&mut g, "src/db/query.rs"); // 7
 
+        let r = EdgeConfidence::Resolved;
         // auth triangle
-        g.add_import(login, token);
-        g.add_import(token, session);
-        g.add_import(login, session);
+        g.add_import(login, token, r);
+        g.add_import(token, session, r);
+        g.add_import(login, session, r);
         // ui
-        g.add_import(page, button);
+        g.add_import(page, button, r);
         // db
-        g.add_import(conn, query);
+        g.add_import(conn, query, r);
         // util imported by one file from each cluster → bridges all three
-        g.add_import(login, util);
-        g.add_import(page, util);
-        g.add_import(conn, util);
+        g.add_import(login, util, r);
+        g.add_import(page, util, r);
+        g.add_import(conn, util, r);
         g
     }
 
@@ -1155,7 +1180,7 @@ mod tests {
         };
         let caller = g.add_symbol("authenticate".into(), SymbolKind::Function, login, span);
         let callee = g.add_symbol("validate".into(), SymbolKind::Function, session, span);
-        g.add_call(caller, callee);
+        g.add_call(caller, callee, EdgeConfidence::Resolved);
 
         let view = g.graph_view(true);
         assert_eq!(
@@ -1174,6 +1199,67 @@ mod tests {
         assert_eq!(sym.group, group_of(&view, "src/auth/login.rs"));
         assert!(view.edges.iter().any(|e| e.kind == EdgeKind::Defines));
         assert!(view.edges.iter().any(|e| e.kind == EdgeKind::Calls));
+    }
+
+    #[test]
+    fn graph_view_edges_carry_their_stored_confidence() {
+        let mut g = bridged_graph();
+        // Add one heuristic import on top of the all-resolved bridged graph.
+        let page = g.file_id(Path::new("src/ui/page.rs")).unwrap();
+        let conn = g.file_id(Path::new("src/db/conn.rs")).unwrap();
+        g.add_import(page, conn, EdgeConfidence::Heuristic);
+
+        let span = Span {
+            start_byte: 0,
+            end_byte: 1,
+            start_row: 0,
+            start_col: 0,
+        };
+        let caller = g.add_symbol("render".into(), SymbolKind::Function, page, span);
+        let callee = g.add_symbol("open".into(), SymbolKind::Function, conn, span);
+        g.add_call(caller, callee, EdgeConfidence::Heuristic);
+
+        let view = g.graph_view(true);
+
+        // A Resolved import (from the bridged graph) is reported as Resolved.
+        let resolved_import = view
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == EdgeKind::Import
+                    && e.source == "src/auth/login.rs"
+                    && e.target == "src/auth/token.rs"
+            })
+            .expect("login → token import edge");
+        assert_eq!(resolved_import.confidence, EdgeConfidence::Resolved);
+
+        // The Heuristic import we added carries Heuristic.
+        let heuristic_import = view
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == EdgeKind::Import
+                    && e.source == "src/ui/page.rs"
+                    && e.target == "src/db/conn.rs"
+            })
+            .expect("page → conn import edge");
+        assert_eq!(heuristic_import.confidence, EdgeConfidence::Heuristic);
+
+        // The Calls edge carries the confidence it was added with.
+        let call_edge = view
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls)
+            .expect("a calls edge");
+        assert_eq!(call_edge.confidence, EdgeConfidence::Heuristic);
+
+        // Defines edges are always Resolved.
+        let defines_edge = view
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Defines)
+            .expect("a defines edge");
+        assert_eq!(defines_edge.confidence, EdgeConfidence::Resolved);
     }
 
     #[test]

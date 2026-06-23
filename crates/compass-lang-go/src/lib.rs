@@ -70,10 +70,7 @@ impl Extractor for GoExtractor {
                     } else {
                         // A Go import depends on every file in the target package.
                         for target in files {
-                            resolved.push(ResolvedImport::Resolved {
-                                target,
-                                span: imp.span,
-                            });
+                            resolved.push(ResolvedImport::resolved(target, imp.span));
                         }
                     }
                 }

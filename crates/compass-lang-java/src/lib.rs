@@ -67,10 +67,8 @@ impl Extractor for JavaExtractor {
                 let mut any = false;
                 for root in roots.iter() {
                     for target in ctx.files_in_dir(Path::new(&join(root, &rel))) {
-                        resolved.push(ResolvedImport::Resolved {
-                            target,
-                            span: imp.span,
-                        });
+                        // FQN→directory under a discovered source root is convention-based.
+                        resolved.push(ResolvedImport::heuristic(target, imp.span));
                         any = true;
                     }
                 }
@@ -88,10 +86,8 @@ impl Extractor for JavaExtractor {
                     None => resolved.push(ResolvedImport::External {
                         specifier: imp.specifier.clone(),
                     }),
-                    Some(target) => resolved.push(ResolvedImport::Resolved {
-                        target,
-                        span: imp.span,
-                    }),
+                    // FQN→file under a discovered source root is convention-based.
+                    Some(target) => resolved.push(ResolvedImport::heuristic(target, imp.span)),
                 }
             }
         }

@@ -68,10 +68,7 @@ impl Extractor for PythonExtractor {
 
                 for cand in &candidates {
                     if let Some(target) = ctx.file_by_path(Path::new(cand)) {
-                        return ResolvedImport::Resolved {
-                            target,
-                            span: imp.span,
-                        };
+                        return ResolvedImport::resolved(target, imp.span);
                     }
                 }
 

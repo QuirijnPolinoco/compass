@@ -212,6 +212,23 @@ body {
 }
 .legend-row .count { color: var(--faint); font-variant-numeric: tabular-nums; }
 .legend-more { color: var(--faint); padding-top: var(--s1); }
+/* Note that a dotted, faded edge is a heuristic (guessed) link, not a certain one. */
+.legend-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
+  color: var(--faint);
+}
+.legend-note .edge-sample {
+  flex: none;
+  width: 16px;
+  height: 0;
+  border-top: 1px dotted var(--muted);
+  opacity: 0.5;
+}
 
 /* ---- tooltip -------------------------------------------------------------- */
 #tooltip {

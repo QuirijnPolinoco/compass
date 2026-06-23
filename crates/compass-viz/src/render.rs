@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use compass_core::{EdgeKind, GraphView, NodeKind, SymbolKind};
+use compass_core::{EdgeConfidence, EdgeKind, GraphView, NodeKind, SymbolKind};
 use serde::Serialize;
 
 // Front-end assets, embedded so the binary is self-contained and works with no network
@@ -67,6 +67,9 @@ struct EdgeData {
     target: String,
     /// `"import"`, `"defines"`, or `"calls"`.
     kind: &'static str,
+    /// `"Resolved"` (path-exact / same-file) or `"Heuristic"` (a convention-based guess) —
+    /// the front-end renders heuristic edges dashed + faint so guesses read differently.
+    confidence: &'static str,
 }
 
 fn node_kind_str(kind: NodeKind) -> &'static str {
@@ -81,6 +84,13 @@ fn edge_kind_str(kind: EdgeKind) -> &'static str {
         EdgeKind::Import => "import",
         EdgeKind::Defines => "defines",
         EdgeKind::Calls => "calls",
+    }
+}
+
+fn edge_confidence_str(confidence: EdgeConfidence) -> &'static str {
+    match confidence {
+        EdgeConfidence::Resolved => "Resolved",
+        EdgeConfidence::Heuristic => "Heuristic",
     }
 }
 
@@ -144,6 +154,7 @@ fn elements_of(view: &GraphView) -> Elements {
                     source: e.source.clone(),
                     target: e.target.clone(),
                     kind,
+                    confidence: edge_confidence_str(e.confidence),
                 },
             });
         }
@@ -188,7 +199,7 @@ pub fn snapshot_html(files_view: &GraphView, symbols_view: &GraphView) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::{GraphEdge, GraphNode};
+    use compass_core::{EdgeConfidence, GraphEdge, GraphNode};
 
     fn file_node(path: &str, group: u32) -> GraphNode {
         GraphNode {
@@ -222,11 +233,13 @@ mod tests {
                     source: "a.rs".into(),
                     target: "b.rs".into(),
                     kind: EdgeKind::Import,
+                    confidence: EdgeConfidence::Resolved,
                 },
                 GraphEdge {
                     source: "a.rs".into(),
                     target: "b.rs".into(),
                     kind: EdgeKind::Import,
+                    confidence: EdgeConfidence::Resolved,
                 },
             ],
         };
@@ -236,6 +249,29 @@ mod tests {
         assert_eq!(parsed["elements"]["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(parsed["elements"]["edges"].as_array().unwrap().len(), 1);
         assert_eq!(parsed["elements"]["nodes"][0]["data"]["folder"], "");
+        assert_eq!(
+            parsed["elements"]["edges"][0]["data"]["confidence"],
+            "Resolved"
+        );
+    }
+
+    #[test]
+    fn heuristic_edge_confidence_is_emitted() {
+        let view = GraphView {
+            nodes: vec![file_node("a.rs", 0), file_node("b.rs", 0)],
+            edges: vec![GraphEdge {
+                source: "a.rs".into(),
+                target: "b.rs".into(),
+                kind: EdgeKind::Import,
+                confidence: EdgeConfidence::Heuristic,
+            }],
+        };
+        let json = graph_payload_json(&view, 1);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["elements"]["edges"][0]["data"]["confidence"],
+            "Heuristic"
+        );
     }
 
     #[test]

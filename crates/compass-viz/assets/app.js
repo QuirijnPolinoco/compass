@@ -68,6 +68,13 @@
       },
       { selector: 'edge[kind = "calls"]', style: { "line-style": "dashed" } },
       { selector: 'edge[kind = "defines"]', style: { "line-color": "#242a37", "opacity": 0.3 } },
+      // Heuristic edges (guessed: namespace→dir, unique-global call) read as dashed + faint,
+      // so a human can tell a guess from a path-exact certainty. `dotted` distinguishes a
+      // heuristic import from a (dashed) call edge.
+      {
+        selector: 'edge[confidence = "Heuristic"]',
+        style: { "line-style": "dotted", "opacity": 0.28 },
+      },
       { selector: ".show-label", style: { "text-opacity": 1 } },
       { selector: ".dim", style: { opacity: 0.07 } },
       {
@@ -294,6 +301,11 @@
         '</span><span class="count">' + e.count + "</span></div>";
     });
     if (legendData.length > MAX) html += '<div class="legend-more">+' + (legendData.length - MAX) + " more</div>";
+    // One-line note so a human can read dotted/faint edges as guessed, not certain.
+    if (cy.edges('[confidence = "Heuristic"]').nonempty()) {
+      html += '<div class="legend-note"><span class="edge-sample" aria-hidden="true"></span>' +
+        "dotted &amp; faint = heuristic (guessed) edge</div>";
+    }
     legendEl.innerHTML = html;
     legendEl.hidden = false;
   }

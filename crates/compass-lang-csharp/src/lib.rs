@@ -67,10 +67,8 @@ impl Extractor for CSharpExtractor {
             let mut any = false;
             for root in roots.iter() {
                 for target in ctx.files_in_dir(Path::new(&join(root, &rel))) {
-                    resolved.push(ResolvedImport::Resolved {
-                        target,
-                        span: imp.span,
-                    });
+                    // namespace→directory is a best-effort convention, not a path-exact match.
+                    resolved.push(ResolvedImport::heuristic(target, imp.span));
                     any = true;
                 }
             }
@@ -234,6 +232,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compass_core::EdgeConfidence;
     use compass_core::SymbolKind::{Class, Enum, Interface, Method, Struct};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
@@ -353,8 +352,12 @@ namespace Company.App
             resolved[0]
         );
         match &resolved[1] {
-            ResolvedImport::Resolved { target, .. } => {
-                assert_eq!(*target, ctx.id_of("src/Company/Util/Helpers.cs"))
+            ResolvedImport::Resolved {
+                target, confidence, ..
+            } => {
+                assert_eq!(*target, ctx.id_of("src/Company/Util/Helpers.cs"));
+                // namespace→directory is a convention-based guess, not path-exact.
+                assert_eq!(*confidence, EdgeConfidence::Heuristic);
             }
             other => panic!("internal `using Company.Util` should resolve, got {other:?}"),
         }

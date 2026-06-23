@@ -91,10 +91,7 @@ impl Extractor for RustExtractor {
                 ];
                 for cand in &candidates {
                     if let Some(target) = ctx.file_by_path(Path::new(cand)) {
-                        return ResolvedImport::Resolved {
-                            target,
-                            span: imp.span,
-                        };
+                        return ResolvedImport::resolved(target, imp.span);
                     }
                 }
                 ResolvedImport::Unresolved {
@@ -127,7 +124,7 @@ fn resolve_crate_use(
 ) -> ResolvedImport {
     if let Some(lib_rel) = crate_index.get(crate_name) {
         if let Some(target) = ctx.file_by_path(Path::new(lib_rel)) {
-            return ResolvedImport::Resolved { target, span };
+            return ResolvedImport::resolved(target, span);
         }
     }
     ResolvedImport::External {

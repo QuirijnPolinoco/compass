@@ -84,10 +84,7 @@ impl Extractor for TypeScriptExtractor {
                 for base in &bases {
                     for cand in candidates(base) {
                         if let Some(target) = ctx.file_by_path(Path::new(&cand)) {
-                            return ResolvedImport::Resolved {
-                                target,
-                                span: imp.span,
-                            };
+                            return ResolvedImport::resolved(target, imp.span);
                         }
                     }
                 }

@@ -65,10 +65,7 @@ impl Extractor for RubyExtractor {
                     format!("{base}.rb")
                 };
                 match ctx.file_by_path(Path::new(&candidate)) {
-                    Some(target) => ResolvedImport::Resolved {
-                        target,
-                        span: imp.span,
-                    },
+                    Some(target) => ResolvedImport::resolved(target, imp.span),
                     None => ResolvedImport::Unresolved {
                         specifier: imp.specifier.clone(),
                         span: imp.span,

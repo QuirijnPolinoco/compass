@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use compass_core::{Diagnostic, DiagnosticKind, FileId, Graph, LanguageId, SymbolId};
+use compass_core::{
+    Diagnostic, DiagnosticKind, EdgeConfidence, FileId, Graph, LanguageId, SymbolId,
+};
 use compass_extract::{
     ExtractedSymbol, LangConfig, RawCall, RawImport, Registry, ResolutionContext, ResolvedImport,
 };
@@ -130,9 +132,11 @@ pub fn index_incremental(
         };
         for resolved in extractor.resolve(&p.imports, &ctx, &config) {
             match resolved {
-                ResolvedImport::Resolved { target, .. } => {
+                ResolvedImport::Resolved {
+                    target, confidence, ..
+                } => {
                     if target != fid {
-                        graph.add_import(fid, target);
+                        graph.add_import(fid, target, confidence);
                     }
                 }
                 ResolvedImport::Unresolved {
@@ -267,15 +271,21 @@ fn resolve_calls(graph: &mut Graph, parsed: &[Parsed], symbol_ids: &[Vec<SymbolI
             let Some(&caller) = ids.get(call.caller) else {
                 continue;
             };
-            let target = local.get(call.callee.as_str()).copied().or_else(|| {
-                match by_name.get(call.callee.as_str()) {
-                    Some(matches) if matches.len() == 1 => Some(matches[0]),
+            // A same-file hit is deterministic (Resolved); a unique-global hit is a
+            // name-based guess (Heuristic) — correct in practice but not provable here.
+            let target = local
+                .get(call.callee.as_str())
+                .copied()
+                .map(|id| (id, EdgeConfidence::Resolved))
+                .or_else(|| match by_name.get(call.callee.as_str()) {
+                    Some(matches) if matches.len() == 1 => {
+                        Some((matches[0], EdgeConfidence::Heuristic))
+                    }
                     _ => None,
-                }
-            });
-            if let Some(callee) = target {
+                });
+            if let Some((callee, confidence)) = target {
                 if callee != caller {
-                    graph.add_call(caller, callee);
+                    graph.add_call(caller, callee, confidence);
                 }
             }
         }

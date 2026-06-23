@@ -65,10 +65,7 @@ impl Extractor for PhpExtractor {
                     format!("{base}.php")
                 };
                 match ctx.file_by_path(Path::new(&candidate)) {
-                    Some(target) => ResolvedImport::Resolved {
-                        target,
-                        span: imp.span,
-                    },
+                    Some(target) => ResolvedImport::resolved(target, imp.span),
                     // PHP include semantics are flexible (include_path); don't flag broken.
                     None => ResolvedImport::External {
                         specifier: imp.specifier.clone(),

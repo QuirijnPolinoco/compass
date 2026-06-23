@@ -10,7 +10,8 @@ use crate::index::ExtractionCache;
 
 /// Bump on any breaking change to a serialized `compass-core`/`compass-extract` type ⇒ stale
 /// caches reindex. v2: `Graph` gained `calls` edges and the per-file extraction cache landed.
-pub const CACHE_FORMAT_VERSION: u32 = 2;
+/// v3: import/call edges gained a trailing `EdgeConfidence` (the serialized tuple shape changed).
+pub const CACHE_FORMAT_VERSION: u32 = 3;
 
 const CACHE_DIR: &str = ".compass";
 const CACHE_FILE: &str = "graph.json";
