@@ -4,7 +4,9 @@
 //! detection, the tree-sitter-java grammar, symbol extraction (classes, interfaces,
 //! enums, records, methods), and package/source-root-aware import resolution.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
@@ -49,35 +51,40 @@ impl Extractor for JavaExtractor {
         ctx: &dyn ResolutionContext,
         _config: &LangConfig,
     ) -> Vec<ResolvedImport> {
-        // Java maps `package a.b.c` to a directory under a source root. Derive the source
-        // root from the current file's package, then resolve each import's FQN under it.
-        let current_dir = parent_dir(&normalize(ctx.current_file()));
-        let package = read_package(ctx.repo_root(), ctx.current_file()).unwrap_or_default();
-        let root = source_root(&current_dir, &package);
+        // Java maps `package a.b.c` to a directory under a source root. A repo can have many
+        // source roots (multi-module: `moduleA/src/main/java`, `moduleB/src/main/java`, …), so
+        // resolve each import's FQN under *every* discovered root — first hit wins. Not found ⇒
+        // JDK / third-party (external), never a broken-import diagnostic.
+        let roots = source_roots(ctx);
 
         let mut resolved = Vec::new();
         for imp in imports {
             let spec = imp.specifier.as_str();
             if let Some(pkg) = spec.strip_suffix(".*") {
-                // Wildcard: depend on every file in the imported package directory.
-                let dir = join(&root, &pkg.replace('.', "/"));
-                let files = ctx.files_in_dir(Path::new(&dir));
-                if files.is_empty() {
-                    resolved.push(ResolvedImport::External {
-                        specifier: imp.specifier.clone(),
-                    });
-                } else {
-                    for target in files {
+                // Wildcard: depend on every file in the imported package directory, under any
+                // root. A given dir lives under one root, so files are never double-counted.
+                let rel = pkg.replace('.', "/");
+                let mut any = false;
+                for root in roots.iter() {
+                    for target in ctx.files_in_dir(Path::new(&join(root, &rel))) {
                         resolved.push(ResolvedImport::Resolved {
                             target,
                             span: imp.span,
                         });
+                        any = true;
                     }
                 }
+                if !any {
+                    resolved.push(ResolvedImport::External {
+                        specifier: imp.specifier.clone(),
+                    });
+                }
             } else {
-                let candidate = format!("{}.java", join(&root, &spec.replace('.', "/")));
-                match ctx.file_by_path(Path::new(&candidate)) {
-                    // Not found ⇒ JDK / third-party (external), not a broken import.
+                let rel = spec.replace('.', "/");
+                let hit = roots.iter().find_map(|root| {
+                    ctx.file_by_path(Path::new(&format!("{}.java", join(root, &rel))))
+                });
+                match hit {
                     None => resolved.push(ResolvedImport::External {
                         specifier: imp.specifier.clone(),
                     }),
@@ -90,6 +97,38 @@ impl Extractor for JavaExtractor {
         }
         resolved
     }
+}
+
+/// A repo's Java source roots, built once and cached per repo root (resolve runs per file, but
+/// the layout is constant for a run).
+fn source_roots(ctx: &dyn ResolutionContext) -> Arc<Vec<String>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<String>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().expect("java source-root cache poisoned");
+    guard
+        .entry(ctx.repo_root().to_path_buf())
+        .or_insert_with(|| Arc::new(compute_source_roots(ctx)))
+        .clone()
+}
+
+/// Derive every source root in the repo: for each mapped `.java` file, strip its declared
+/// `package` path off its directory (a file with no package contributes its own dir). Reads
+/// each file's `package` line once — the same per-file read the resolver used to do, just
+/// gathered up front so imports resolve across modules, not only within the importer's.
+fn compute_source_roots(ctx: &dyn ResolutionContext) -> Vec<String> {
+    let mut roots: HashSet<String> = HashSet::new();
+    for f in ctx.all_files() {
+        let rel = normalize(f);
+        if !rel.ends_with(".java") {
+            continue;
+        }
+        let dir = parent_dir(&rel);
+        let package = read_package(ctx.repo_root(), f).unwrap_or_default();
+        roots.insert(source_root(&dir, &package));
+    }
+    let mut roots: Vec<String> = roots.into_iter().collect();
+    roots.sort(); // deterministic resolution order; shallower roots sort first
+    roots
 }
 
 /// Strip the package path off the file's directory to find the Java source root, e.g.
@@ -349,6 +388,33 @@ record Point(int x, int y) {}
                 assert_eq!(*target, ctx.id_of("src/com/example/util/Helper.java"))
             }
             other => panic!("wildcard should resolve to files in the dir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolves_across_multiple_source_roots() {
+        // Multi-module repo: App in moduleA imports Helper from moduleB. The importer's own
+        // root can't resolve it; resolution must try moduleB's root too. Both files are mapped
+        // (so discovery sees both packages) and carry real `package` lines on disk.
+        let ctx = MockResolutionContext::new()
+            .disk("moduleA/src/main/java/com/a/App.java", "package com.a;\n")
+            .disk(
+                "moduleB/src/main/java/com/b/Helper.java",
+                "package com.b;\n",
+            )
+            .current("moduleA/src/main/java/com/a/App.java", "package com.a;\n");
+
+        let resolved = JavaExtractor.resolve(&[raw("com.b.Helper")], &ctx, &LangConfig);
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(
+                    *target,
+                    ctx.id_of("moduleB/src/main/java/com/b/Helper.java")
+                )
+            }
+            other => {
+                panic!("cross-module import should resolve under moduleB's root, got {other:?}")
+            }
         }
     }
 

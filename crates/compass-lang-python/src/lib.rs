@@ -4,7 +4,9 @@
 //! detection, the tree-sitter-python grammar, symbol extraction (functions, classes,
 //! methods), and Python's relative + absolute import resolution.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
@@ -51,6 +53,7 @@ impl Extractor for PythonExtractor {
     ) -> Vec<ResolvedImport> {
         let current = normalize(ctx.current_file());
         let current_dir = current.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        let roots = source_roots(ctx);
 
         imports
             .iter()
@@ -60,7 +63,7 @@ impl Extractor for PythonExtractor {
                 let candidates = if relative {
                     relative_candidates(current_dir, spec)
                 } else {
-                    absolute_candidates(spec)
+                    absolute_candidates(spec, &roots)
                 };
 
                 for cand in &candidates {
@@ -90,10 +93,75 @@ impl Extractor for PythonExtractor {
     }
 }
 
-/// Candidate repo-relative files for an absolute module path (`a.b.c`).
-fn absolute_candidates(module: &str) -> Vec<String> {
+/// Candidate repo-relative files for an absolute module path (`a.b.c`), tried under every
+/// discovered source root. This is what makes the `src/` layout work: `import app.util`
+/// resolves to `src/app/util.py` as well as `app/util.py`. Resolution is `file_by_path`-gated,
+/// so an extra root only ever adds recall, never a wrong edge.
+fn absolute_candidates(module: &str, roots: &[String]) -> Vec<String> {
     let base = module.replace('.', "/");
-    vec![format!("{base}.py"), format!("{base}/__init__.py")]
+    let mut out = Vec::with_capacity(roots.len() * 2);
+    for root in roots {
+        let prefixed = if root.is_empty() {
+            base.clone()
+        } else {
+            format!("{root}/{base}")
+        };
+        out.push(format!("{prefixed}.py"));
+        out.push(format!("{prefixed}/__init__.py"));
+    }
+    out
+}
+
+/// A repo's Python source roots (repo-relative dirs that absolute imports are resolved under),
+/// built once and cached per repo root (resolve runs per file, but the layout is constant).
+fn source_roots(ctx: &dyn ResolutionContext) -> Arc<Vec<String>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<String>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().expect("python source-root cache poisoned");
+    guard
+        .entry(ctx.repo_root().to_path_buf())
+        .or_insert_with(|| Arc::new(compute_source_roots(ctx)))
+        .clone()
+}
+
+/// Discover source roots from the mapped file set — no hardcoded `src`. A source root is the
+/// parent of a *top-level* package: for each directory holding an `__init__.py`, if its parent
+/// is not itself a package, that parent holds the package and is a source root (`src/app/` →
+/// root `src`; `app/` → root ``). The repo root is always included (flat modules and PEP 420
+/// namespace packages live there).
+fn compute_source_roots(ctx: &dyn ResolutionContext) -> Vec<String> {
+    let package_dirs: HashSet<String> = ctx
+        .all_files()
+        .iter()
+        .filter_map(|f| {
+            let s = normalize(f);
+            if let Some(dir) = s.strip_suffix("/__init__.py") {
+                Some(dir.to_string())
+            } else if s == "__init__.py" {
+                Some(String::new())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut roots: HashSet<String> = HashSet::new();
+    roots.insert(String::new());
+    for dir in &package_dirs {
+        let parent = parent_dir(dir);
+        if !package_dirs.contains(parent) {
+            roots.insert(parent.to_string());
+        }
+    }
+    let mut roots: Vec<String> = roots.into_iter().collect();
+    // Deterministic candidate order; "" sorts first, so a flat-layout hit wins ties.
+    roots.sort();
+    roots
+}
+
+/// The parent directory of a `/`-separated repo-relative path (`""` for a top-level entry).
+fn parent_dir(rel: &str) -> &str {
+    rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
 /// Candidate repo-relative files for a relative import (`.mod`, `..pkg.sub`, `.`).
@@ -389,12 +457,56 @@ def make_adder(n):
 
     #[test]
     fn absolute_candidates_cover_module_and_package() {
+        // Flat layout (single `""` root) — module file then package __init__.
         assert_eq!(
-            absolute_candidates("pkg.mod_a"),
+            absolute_candidates("pkg.mod_a", &["".to_string()]),
             vec![
                 "pkg/mod_a.py".to_string(),
                 "pkg/mod_a/__init__.py".to_string()
             ]
+        );
+        // With a `src` root too, the src-layout candidates are appended.
+        assert_eq!(
+            absolute_candidates("pkg.mod_a", &["".to_string(), "src".to_string()]),
+            vec![
+                "pkg/mod_a.py".to_string(),
+                "pkg/mod_a/__init__.py".to_string(),
+                "src/pkg/mod_a.py".to_string(),
+                "src/pkg/mod_a/__init__.py".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_absolute_imports_in_a_src_layout() {
+        // src-layout: the package lives under `src/`, so `import app.util` must resolve to
+        // `src/app/util.py` even though the import is written without the `src` prefix. The
+        // `src` root is discovered from `src/app/__init__.py` — not hardcoded.
+        let ctx = MockResolutionContext::new()
+            .current("src/app/main.py", "")
+            .file("src/app/__init__.py")
+            .file("src/app/util.py");
+        let resolved = PythonExtractor.resolve(&[raw("app.util")], &ctx, &LangConfig);
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("src/app/util.py"))
+            }
+            other => panic!("src-layout absolute import should resolve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discovers_repo_root_and_src_as_source_roots() {
+        // A repo with both a flat package (`flat/`) and a src-layout package (`src/app/`)
+        // yields roots `""` and `src` (sorted), and nothing deeper.
+        let ctx = MockResolutionContext::new()
+            .current("flat/x.py", "")
+            .file("flat/__init__.py")
+            .file("src/app/__init__.py")
+            .file("src/app/sub/__init__.py");
+        assert_eq!(
+            compute_source_roots(&ctx),
+            vec!["".to_string(), "src".to_string()]
         );
     }
 

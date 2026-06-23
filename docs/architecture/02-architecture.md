@@ -160,7 +160,9 @@ compass-cli → compass-engine::index
         → assemble File/Symbol nodes + Defines edges into compass-core
   → resolve raw_calls → Calls edges (Symbol → Symbol): same-file name match first, else a
         unique global match; ambiguous names are skipped (no guessed edge). Language-agnostic.
-  → engine builds a ResolutionContext (read-only path→FileId over all File nodes)
+  → engine builds a ResolutionContext (read-only path→FileId over all File nodes, plus the
+        full file list so a resolver can discover repo-wide structure — e.g. every source root
+        in a multi-module repo, not just the importer's)
   → PHASE 2 — per file:
         Extractor::resolve(raw_imports, &ResolutionContext, &lang_config)
         → resolved Imports edges; unresolved → Diagnostic (FR-12/D2)

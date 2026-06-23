@@ -187,4 +187,7 @@ impl ResolutionContext for RepoContext<'_> {
     fn files_in_dir(&self, rel_dir: &Path) -> Vec<FileId> {
         self.by_dir.get(rel_dir).cloned().unwrap_or_default()
     }
+    fn all_files(&self) -> Vec<&Path> {
+        self.by_path.keys().map(PathBuf::as_path).collect()
+    }
 }

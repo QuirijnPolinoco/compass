@@ -89,6 +89,11 @@ pub trait ResolutionContext {
     fn file_by_path(&self, rel: &Path) -> Option<FileId>;
     /// All mapped files whose parent directory is exactly `rel_dir` (repo-relative).
     fn files_in_dir(&self, rel_dir: &Path) -> Vec<FileId>;
+    /// Every mapped file's repo-relative path (order unspecified). Lets a resolver discover
+    /// repo-wide structure — e.g. *all* source roots in a multi-module project — instead of
+    /// reasoning only from the importing file. Resolvers should cache anything derived from
+    /// this (it's the same for every file in a run); see the Rust/Java extractors.
+    fn all_files(&self) -> Vec<&Path>;
 }
 
 /// The one stable interface a language implements. The two phases keep per-language
@@ -222,9 +227,14 @@ pub mod testing {
         }
 
         /// Set the importing file (repo-relative), written to disk with `contents` so
-        /// resolvers that re-read it (for a package/namespace line) work.
+        /// resolvers that re-read it (for a package/namespace line) work. The importing file is
+        /// itself a mapped file in a real index, so it's registered too (unless already added)
+        /// — this is what puts it in [`all_files`](ResolutionContext::all_files).
         pub fn current(mut self, rel: &str, contents: &str) -> Self {
             self.write(rel, contents);
+            if !self.by_path.contains_key(Path::new(rel)) {
+                self.register(rel);
+            }
             self.current_file = PathBuf::from(rel);
             self
         }
@@ -264,6 +274,9 @@ pub mod testing {
         }
         fn files_in_dir(&self, rel_dir: &Path) -> Vec<FileId> {
             self.by_dir.get(rel_dir).cloned().unwrap_or_default()
+        }
+        fn all_files(&self) -> Vec<&Path> {
+            self.by_path.keys().map(PathBuf::as_path).collect()
         }
     }
 

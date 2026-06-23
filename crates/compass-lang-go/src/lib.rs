@@ -49,18 +49,16 @@ impl Extractor for GoExtractor {
         ctx: &dyn ResolutionContext,
         _config: &LangConfig,
     ) -> Vec<ResolvedImport> {
-        // Go import paths are package paths, not relative file paths. An import that
-        // begins with the module path (from go.mod) is internal and maps to a directory
-        // of `.go` files; anything else is stdlib / third-party (external).
-        let module_path = read_module_path(ctx.repo_root());
+        // Go import paths are package paths, not relative file paths. An import that begins
+        // with the module path (from go.mod) — or with a `replace`d module mapped to a local
+        // directory — is internal and maps to a directory of `.go` files; anything else is
+        // stdlib / third-party (external).
+        let go_mod = read_go_mod(ctx.repo_root());
         let mut resolved = Vec::new();
 
         for imp in imports {
             let spec = imp.specifier.as_str();
-            match module_path
-                .as_deref()
-                .and_then(|m| internal_subpath(m, spec))
-            {
+            match go_mod.internal_dir(spec) {
                 Some(subdir) => {
                     let files = ctx.files_in_dir(&subdir);
                     if files.is_empty() {
@@ -88,9 +86,9 @@ impl Extractor for GoExtractor {
     }
 }
 
-/// If `spec` is inside `module` (the go.mod module path), return the repo-relative
-/// directory it maps to (e.g. module `example.com/demo`, import
-/// `example.com/demo/util` -> `util`). Returns `None` for external packages.
+/// If `spec` is inside `module` (a module path), return the repo-relative subpath it maps to
+/// (e.g. module `example.com/demo`, import `example.com/demo/util` -> `util`). `None` if `spec`
+/// is not under `module`.
 fn internal_subpath(module: &str, spec: &str) -> Option<PathBuf> {
     if spec == module {
         return Some(PathBuf::new()); // the module root package
@@ -99,15 +97,107 @@ fn internal_subpath(module: &str, spec: &str) -> Option<PathBuf> {
     Some(PathBuf::from(rest))
 }
 
-/// Read the `module` declaration from `<repo_root>/go.mod`, if present.
-fn read_module_path(repo_root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(repo_root.join("go.mod")).ok()?;
-    for line in content.lines() {
-        if let Some(rest) = line.trim().strip_prefix("module ") {
-            return Some(rest.trim().to_string());
+/// The parts of `go.mod` that map import paths to in-repo directories: the module path plus any
+/// `replace … => ./local` directives (a filesystem replacement redirects an otherwise-external
+/// module to local `.go` files — common in monorepos / multi-module workspaces).
+struct GoMod {
+    module: Option<String>,
+    /// `(replaced module prefix, repo-relative local dir)` — only filesystem (`./`) targets.
+    replaces: Vec<(String, String)>,
+}
+
+impl GoMod {
+    /// The repo-relative directory an import path maps to, via the module path first, then any
+    /// local `replace`. `None` ⇒ stdlib / third-party (external).
+    fn internal_dir(&self, spec: &str) -> Option<PathBuf> {
+        if let Some(module) = self.module.as_deref() {
+            if let Some(sub) = internal_subpath(module, spec) {
+                return Some(sub);
+            }
+        }
+        for (old, local) in &self.replaces {
+            if let Some(sub) = internal_subpath(old, spec) {
+                return Some(if sub.as_os_str().is_empty() {
+                    PathBuf::from(local)
+                } else {
+                    Path::new(local).join(sub)
+                });
+            }
+        }
+        None
+    }
+}
+
+/// Read `<repo_root>/go.mod`: the `module` declaration and any local `replace` directives
+/// (both single-line and `replace ( … )` block form). Comments and version constraints are
+/// ignored. Best-effort: a missing/odd go.mod just yields an empty [`GoMod`].
+fn read_go_mod(repo_root: &Path) -> GoMod {
+    let mut go_mod = GoMod {
+        module: None,
+        replaces: Vec::new(),
+    };
+    let Ok(content) = std::fs::read_to_string(repo_root.join("go.mod")) else {
+        return go_mod;
+    };
+
+    let mut in_replace_block = false;
+    for raw in content.lines() {
+        // Drop line comments, then trim.
+        let line = raw.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("module ") {
+            go_mod.module = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("replace") {
+            let rest = rest.trim();
+            if rest == "(" {
+                in_replace_block = true;
+            } else {
+                parse_replace(rest, &mut go_mod.replaces);
+            }
+        } else if in_replace_block {
+            if line == ")" {
+                in_replace_block = false;
+            } else {
+                parse_replace(line, &mut go_mod.replaces);
+            }
         }
     }
-    None
+    go_mod
+}
+
+/// Parse one `OLD [version] => NEW [version]` replace entry, recording it only when `NEW` is a
+/// filesystem path (`./…`), which is the only form that maps to in-repo files.
+fn parse_replace(entry: &str, replaces: &mut Vec<(String, String)>) {
+    let Some((lhs, rhs)) = entry.split_once("=>") else {
+        return;
+    };
+    // First whitespace-separated token on each side is the module path / target (skip versions).
+    let (Some(old), Some(target)) = (lhs.split_whitespace().next(), rhs.split_whitespace().next())
+    else {
+        return;
+    };
+    if let Some(local) = local_replacement_dir(target) {
+        replaces.push((old.to_string(), local));
+    }
+}
+
+/// A `replace` target's repo-relative directory, but only for a `./`-rooted local path (Go
+/// requires filesystem replacements to be explicitly relative). `../…` / absolute targets point
+/// outside the indexed tree, and a bare module path is just a rename — all yield `None`.
+fn local_replacement_dir(target: &str) -> Option<String> {
+    if target.starts_with("../") || target.starts_with('/') || target == ".." {
+        return None;
+    }
+    let rel = target.strip_prefix("./").unwrap_or(target);
+    if rel == "." || rel.is_empty() {
+        return Some(String::new());
+    }
+    // Require an explicit local marker so `=> example.com/y` (a module rename) stays external.
+    target
+        .starts_with('.')
+        .then(|| rel.trim_end_matches('/').to_string())
 }
 
 /// Recursively pull symbols and import specifiers from the parse tree.
@@ -298,6 +388,78 @@ func main() {
         assert!(
             matches!(resolved[3], ResolvedImport::Unresolved { .. }),
             "internal pkg with no files is broken"
+        );
+    }
+
+    #[test]
+    fn resolve_honors_local_replace_directive() {
+        // A `replace` to a local dir makes an otherwise-third-party module path internal.
+        // Block form here; the replaced module `example.com/lib` lives in `./vendored/lib`.
+        let ctx = MockResolutionContext::new()
+            .disk(
+                "go.mod",
+                "module example.com/demo\n\nrequire example.com/lib v1.2.3\n\nreplace (\n\texample.com/lib v1.2.3 => ./vendored/lib\n)\n",
+            )
+            .current("main.go", "package main\n")
+            .file("vendored/lib/lib.go");
+        let imports = [raw("example.com/lib"), raw("example.com/lib/sub")];
+        let resolved = GoExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        // `example.com/lib` -> ./vendored/lib (has lib.go) -> Resolved.
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("vendored/lib/lib.go"))
+            }
+            other => panic!("replaced module should resolve to local dir, got {other:?}"),
+        }
+        // A subpackage of a replaced module with no mapped files is Unresolved (internal).
+        assert!(
+            matches!(resolved[1], ResolvedImport::Unresolved { .. }),
+            "replaced subpackage with no files is internal-but-broken, got {:?}",
+            resolved[1]
+        );
+    }
+
+    #[test]
+    fn single_line_replace_maps_module_root() {
+        // Single-line replace, target is the repo root (`.`); import == replaced module.
+        let ctx = MockResolutionContext::new()
+            .disk(
+                "go.mod",
+                "module example.com/demo\n\nreplace example.com/old => .\n",
+            )
+            .current("main.go", "package main\n")
+            .file("root_pkg.go");
+        let resolved = GoExtractor.resolve(&[raw("example.com/old")], &ctx, &LangConfig);
+        // `=> .` maps to the repo root; assert root_pkg.go is among the resolved targets (the
+        // mock also maps go.mod into the root, which the real walk never would).
+        let targets: Vec<_> = resolved
+            .iter()
+            .filter_map(|r| match r {
+                ResolvedImport::Resolved { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            targets.contains(&ctx.id_of("root_pkg.go")),
+            "`=> .` should map to the repo root, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn module_rename_replace_stays_external() {
+        // `replace A => B` where B is a module path (not `./…`) is a rename, still external.
+        let ctx = MockResolutionContext::new()
+            .disk(
+                "go.mod",
+                "module example.com/demo\n\nreplace example.com/x => example.com/y v1.0.0\n",
+            )
+            .current("main.go", "package main\n");
+        let resolved = GoExtractor.resolve(&[raw("example.com/x")], &ctx, &LangConfig);
+        assert!(
+            matches!(resolved[0], ResolvedImport::External { .. }),
+            "a module-path replacement is not local, got {:?}",
+            resolved[0]
         );
     }
 

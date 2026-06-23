@@ -9,7 +9,9 @@
 //! then map `using A.B` to that directory). Imports that don't map are treated as
 //! external (BCL / NuGet), never as broken — avoiding false diagnostics.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
@@ -54,30 +56,63 @@ impl Extractor for CSharpExtractor {
         ctx: &dyn ResolutionContext,
         _config: &LangConfig,
     ) -> Vec<ResolvedImport> {
-        let current_dir = parent_dir(&normalize(ctx.current_file()));
-        let namespace = read_namespace(ctx.repo_root(), ctx.current_file()).unwrap_or_default();
-        let root = source_root(&current_dir, &namespace);
+        // C# namespaces map (by convention) to a directory of .cs files, but a repo can hold
+        // several source roots (one per project/.csproj). Resolve each `using` namespace under
+        // *every* discovered root; unmapped ⇒ BCL / NuGet (external), never broken.
+        let roots = source_roots(ctx);
 
         let mut resolved = Vec::new();
         for imp in imports {
-            // A `using` imports a namespace ⇒ (by convention) a directory of .cs files.
-            let dir = join(&root, &imp.specifier.replace('.', "/"));
-            let files = ctx.files_in_dir(Path::new(&dir));
-            if files.is_empty() {
-                resolved.push(ResolvedImport::External {
-                    specifier: imp.specifier.clone(),
-                });
-            } else {
-                for target in files {
+            let rel = imp.specifier.replace('.', "/");
+            let mut any = false;
+            for root in roots.iter() {
+                for target in ctx.files_in_dir(Path::new(&join(root, &rel))) {
                     resolved.push(ResolvedImport::Resolved {
                         target,
                         span: imp.span,
                     });
+                    any = true;
                 }
+            }
+            if !any {
+                resolved.push(ResolvedImport::External {
+                    specifier: imp.specifier.clone(),
+                });
             }
         }
         resolved
     }
+}
+
+/// A repo's C# source roots, built once and cached per repo root (resolve runs per file, but
+/// the project layout is constant for a run).
+fn source_roots(ctx: &dyn ResolutionContext) -> Arc<Vec<String>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Vec<String>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().expect("csharp source-root cache poisoned");
+    guard
+        .entry(ctx.repo_root().to_path_buf())
+        .or_insert_with(|| Arc::new(compute_source_roots(ctx)))
+        .clone()
+}
+
+/// Derive every source root in the repo: for each mapped `.cs` file, strip its declared
+/// `namespace` path off its directory (a file with no namespace contributes its own dir). This
+/// lets a `using` resolve across projects, not only within the importer's tree.
+fn compute_source_roots(ctx: &dyn ResolutionContext) -> Vec<String> {
+    let mut roots: HashSet<String> = HashSet::new();
+    for f in ctx.all_files() {
+        let rel = normalize(f);
+        if !rel.ends_with(".cs") {
+            continue;
+        }
+        let dir = parent_dir(&rel);
+        let namespace = read_namespace(ctx.repo_root(), f).unwrap_or_default();
+        roots.insert(source_root(&dir, &namespace));
+    }
+    let mut roots: Vec<String> = roots.into_iter().collect();
+    roots.sort();
+    roots
 }
 
 /// Strip the namespace path off the file's directory to find the source root, e.g.
@@ -328,6 +363,26 @@ namespace Company.App
             "an unmapped namespace is External, never Unresolved: {:?}",
             resolved[2]
         );
+    }
+
+    #[test]
+    fn resolves_across_multiple_projects() {
+        // Two projects, each its own source root. A `using` in ProjA must resolve a namespace
+        // whose files live under ProjB's root. Both files are mapped with real namespaces.
+        let ctx = MockResolutionContext::new()
+            .disk("ProjA/Company/App/Program.cs", "namespace Company.App;\n")
+            .disk("ProjB/Company/Util/Helpers.cs", "namespace Company.Util;\n")
+            .current("ProjA/Company/App/Program.cs", "namespace Company.App;\n");
+
+        let resolved = CSharpExtractor.resolve(&[raw("Company.Util")], &ctx, &LangConfig);
+        match &resolved[0] {
+            ResolvedImport::Resolved { target, .. } => {
+                assert_eq!(*target, ctx.id_of("ProjB/Company/Util/Helpers.cs"))
+            }
+            other => {
+                panic!("cross-project `using` should resolve under ProjB's root, got {other:?}")
+            }
+        }
     }
 
     #[test]
