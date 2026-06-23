@@ -43,3 +43,16 @@ lang-kotlin = ["dep:compass-lang-kotlin"]
 lang-ruby = ["dep:compass-lang-ruby"]
 lang-php = ["dep:compass-lang-php"]
 lang-c = ["dep:compass-lang-c"]
+
+# `cargo binstall --git https://github.com/QuirijnPolinoco/compass compass-cli` fetches the
+# matching prebuilt archive from the GitHub Release instead of compiling. Asset names + the
+# `v`-prefixed tag match the release workflow; the binary sits at the archive root.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/compass-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "compass"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/compass-{ target }.zip"
+pkg-fmt = "zip"
+bin-dir = "compass.exe"

@@ -95,26 +95,36 @@ download is offered when a release is available.
 
 `cargo --version` should print **1.85+**.
 
-### 2. Build & install (same on every OS)
+### 2. Install
 
 ```sh
+# from a clone — build + install
 cargo install --path crates/compass-cli
+
+# or straight from GitHub, no clone (build from source)
+cargo install --git https://github.com/QuirijnPolinoco/compass compass-cli
+
+# or grab a prebuilt binary instead of compiling (needs cargo-binstall)
+cargo binstall --git https://github.com/QuirijnPolinoco/compass compass-cli
 ```
 
-Installs `compass` into Cargo's bin dir — `%USERPROFILE%\.cargo\bin` (Windows) or `~/.cargo/bin`
-(macOS/Linux), already on your `PATH` via rustup. Open a new terminal and check:
+Any of these put `compass` in Cargo's bin dir — `%USERPROFILE%\.cargo\bin` (Windows) or
+`~/.cargo/bin` (macOS/Linux), already on your `PATH` via rustup. Open a new terminal and check:
 
 ```sh
 compass --help
 compass languages      # lists all 10 languages
 ```
 
-> **Just trying it?** From the repo root: `cargo run -p compass-cli -- map .` (no install).
+> **Just trying it?** From a clone: `cargo run -p compass-cli -- map .` (no install).
 
-### 3. Prebuilt binary (if a release exists)
+### 3. Prebuilt binary (download)
 
-Grab your platform's asset from the [latest release](https://github.com/QuirijnPolinoco/compass/releases/latest),
-unpack, and put `compass` on your `PATH`. (`brew`/`scoop`/`cargo-binstall` are on the roadmap.)
+Grab your platform's archive (+ its `.sha256`) from the
+[latest release](https://github.com/QuirijnPolinoco/compass/releases/latest), unpack, and put
+`compass` on your `PATH`. **Homebrew** and **Scoop** formulas live in
+[`packaging/`](packaging/) (point them at a tap/bucket to enable `brew install …` /
+`scoop install compass`).
 
 * * *
 
