@@ -1,8 +1,9 @@
 //! Live freshness (FR-13/F1): watch a repo and react to debounced file changes.
 //!
 //! Build/VCS/cache directories are ignored so that writing our own `.compass/` cache can't
-//! trigger a re-index loop. v1 re-indexes the whole repo on change; incremental
-//! single-file reparse is a planned optimization.
+//! trigger a re-index loop. On change the whole repo is re-indexed, but indexing is
+//! incremental (`index::index_incremental` reuses the cached extraction of every file whose
+//! `mtime`/`size` are unchanged), so a re-index after one edit only re-reads the edited file.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use compass_core::{FileId, LanguageId, Span, SymbolKind};
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Parser, Tree};
 
 /// How the walker recognizes files of this language. Registry-driven: the walker holds
@@ -19,7 +20,7 @@ pub struct Detection {
 }
 
 /// A symbol emitted by an extractor, before it is interned into the graph.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedSymbol {
     pub name: String,
     pub kind: SymbolKind,
@@ -27,7 +28,7 @@ pub struct ExtractedSymbol {
 }
 
 /// A raw import specifier exactly as written in source (phase 1; not yet resolved).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImport {
     pub specifier: String,
     pub span: Span,
@@ -40,7 +41,7 @@ pub struct RawImport {
 /// first, then a unique global match — and skips ambiguous names, so a `Calls` edge is only
 /// ever added when the target is unambiguous. Extractors that don't track calls leave this
 /// empty (it defaults to `[]`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawCall {
     pub caller: usize,
     pub callee: String,

@@ -4,11 +4,15 @@
 
 use std::path::{Path, PathBuf};
 
-/// A discovered file: its absolute path (to read from disk) and its repo-relative,
-/// forward-slash-normalized path (the stable identity used in the graph).
+/// A discovered file: its absolute path (to read from disk), its repo-relative,
+/// forward-slash-normalized path (the stable identity used in the graph), and a cheap change
+/// fingerprint (mtime + size) read from directory metadata — used to skip re-reading unchanged
+/// files on a later index (`0`/`0` when metadata is unavailable, which forces a re-read).
 pub struct Walked {
     pub abs: PathBuf,
     pub rel: PathBuf,
+    pub mtime_ns: u64,
+    pub size: u64,
 }
 
 /// Walk `repo_root`, honoring `.gitignore`, returning every regular file.
@@ -18,14 +22,32 @@ pub fn walk(repo_root: &Path) -> Vec<Walked> {
         if entry.file_type().is_some_and(|t| t.is_file()) {
             let abs = entry.path().to_path_buf();
             if let Ok(rel) = abs.strip_prefix(repo_root) {
+                let (mtime_ns, size) = fingerprint(&entry);
                 out.push(Walked {
                     rel: normalize(rel),
                     abs,
+                    mtime_ns,
+                    size,
                 });
             }
         }
     }
     out
+}
+
+/// A file's (mtime-nanos, size) for change detection. `(0, 0)` if metadata can't be read —
+/// callers treat that as "changed", so it's never reused from a stale cache.
+fn fingerprint(entry: &ignore::DirEntry) -> (u64, u64) {
+    let Ok(meta) = entry.metadata() else {
+        return (0, 0);
+    };
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    (mtime_ns, meta.len())
 }
 
 /// Normalize a relative path to use `/` separators, so the graph's identities and

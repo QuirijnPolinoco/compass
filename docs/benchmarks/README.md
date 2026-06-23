@@ -4,6 +4,9 @@
 > and file names are anonymized below). Honest by design — every number is measured or
 > observed; nothing is invented, and findings are reported even where they don't flatter
 > Compass.
+>
+> Looking for **indexing speed at scale** (does it handle 100k files)? See
+> **[scaling.md](scaling.md)**.
 
 ## TL;DR
 

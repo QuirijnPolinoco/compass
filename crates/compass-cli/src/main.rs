@@ -42,10 +42,19 @@ fn main() -> ExitCode {
 }
 
 /// Index `path` with the compiled-in extractors, or print an error and return `None`.
+///
+/// Incremental by default: reuses the on-disk per-file extraction cache (`.compass/`) so files
+/// whose `(mtime, size)` are unchanged are not re-read or re-parsed — the dominant cost on a
+/// large repo. The refreshed cache is written back (best-effort) so the next run stays fast.
+/// Delete `.compass/` (or it auto-invalidates on a format bump) to force a full re-index.
 fn build_graph(path: &Path) -> Option<Graph> {
     let registry = registry::register_all();
-    match compass_engine::index(path, &registry) {
-        Ok(graph) => Some(graph),
+    let prev = compass_engine::cache::load_extractions(path);
+    match compass_engine::index_incremental(path, &registry, prev.as_ref()) {
+        Ok((graph, extractions)) => {
+            let _ = compass_engine::cache::save_extractions(path, &extractions);
+            Some(graph)
+        }
         Err(e) => {
             eprintln!("compass: failed to index {}: {e:#}", path.display());
             None

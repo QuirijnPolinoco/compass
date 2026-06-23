@@ -9,4 +9,4 @@ pub mod index;
 pub mod walk;
 pub mod watch;
 
-pub use index::index;
+pub use index::{index, index_incremental, ExtractionCache};

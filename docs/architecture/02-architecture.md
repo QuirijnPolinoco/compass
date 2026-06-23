@@ -64,8 +64,9 @@ Compass ships as **one binary** with four entry modes around a shared engine:
   can launch the server. It is also the **composition root** (it decides which language
   crates are compiled in and registers them).
 - **MCP server** — long-running process (stdio) that an AI host launches and queries.
-- **Watcher** *(FR-13/F1)* — `compass watch`: turns file-system events into map updates (v1
-  re-indexes on change; incremental single-file reparse is a planned optimization).
+- **Watcher** *(FR-13/F1)* — `compass watch`: turns file-system events into map updates. It
+  re-indexes the repo, but indexing is **incremental** — files whose `mtime`/`size` are
+  unchanged are served from the per-file extraction cache, so an edit only re-reads what changed.
 - **Map server** *(FR-20/FR-21, ADR-0005)* — `compass map`: serves an interactive,
   force-directed **visual map** to the browser over a localhost HTTP server, and pushes live
   updates over SSE off the watcher, so the open page re-lays-out as you edit. Opt-in,
@@ -175,9 +176,10 @@ subgraph (FR-11/C3) of **only real, mapped files** (FR-6/D1). The CLI wires the 
 engine/graph into the port at startup, so `compass-mcp` stays engine-agnostic.
 
 **Flow C — Live freshness (FR-13/F1).** `compass watch` runs `engine::watch`: a debounced,
-gitignore/cache-aware file watcher (`notify`). On change it re-indexes the repo and refreshes
-the cache. *Planned optimization:* reparse only the changed file and patch the affected
-nodes/edges, so steady-state cost is one file, not the repo.
+gitignore/cache-aware file watcher (`notify`). On change it re-indexes the repo, but indexing is
+**incremental** (`index_incremental`): the per-file extraction cache (`.compass/extractions.json`)
+is reused for every file whose `mtime`/`size` are unchanged, so steady-state cost is reading the
+one edited file plus the cheap whole-repo assemble/resolve — not re-reading the tree.
 
 **Flow D — Live visual map (FR-20/FR-21, ADR-0005).**
 
@@ -211,7 +213,7 @@ the engine (the CLI mediates), preserving the §4 layering.
 
 | Attribute (from requirements) | How the design achieves it |
 |-------------------------------|----------------------------|
-| Performance @ scale | `ignore` parallel walk + `rayon` parallel `extract` (no GIL); per-file work is independent; `resolve` is a second pass over an in-memory inventory; content-hash cache skips unchanged files on restart |
+| Performance @ scale | `ignore` parallel walk + `rayon` parallel `extract` (no GIL); per-file work is independent; `resolve` is a second pass over an in-memory inventory. Measured: parse+extract for 100k files is sub-second of CPU — the cost is first-read I/O, so the per-file **extraction cache** (`mtime`/`size`-keyed) skips re-reading unchanged files, making re-index of a large repo near-instant ([scaling benchmark](../benchmarks/scaling.md)). `COMPASS_TIMING=1` prints per-phase timings |
 | Startup | Native binary, no runtime warmup; cache load avoids re-indexing on every launch |
 | Privacy (G1) | No networking code in the binary at all; tree-sitter parses locally; code is never executed, only read; no telemetry |
 | Correctness / robustness (D1/D2) | Per-file parse errors and unresolved imports become `Diagnostic`s, never fatal — one bad file never aborts the index; graph holds only real files |

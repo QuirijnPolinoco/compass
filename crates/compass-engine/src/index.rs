@@ -10,10 +10,12 @@ use compass_extract::{
     ExtractedSymbol, LangConfig, RawCall, RawImport, Registry, ResolutionContext, ResolvedImport,
 };
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::walk::{self, Walked};
 
-/// One file after phase-1 parse + extract.
+/// One file after phase-1 parse + extract. Carries its change fingerprint (`mtime_ns`/`size`)
+/// so the result can be written back into the [`ExtractionCache`] for next time.
 struct Parsed {
     rel: PathBuf,
     language: LanguageId,
@@ -21,20 +23,64 @@ struct Parsed {
     symbols: Vec<ExtractedSymbol>,
     imports: Vec<RawImport>,
     calls: Vec<RawCall>,
+    mtime_ns: u64,
+    size: u64,
 }
 
-/// Build the full map of `repo_root` using the compiled-in language extractors.
-pub fn index(repo_root: &Path, registry: &Registry) -> anyhow::Result<Graph> {
-    let files = walk::walk(repo_root);
+/// A file's phase-1 extraction, cached on disk so a later index can skip re-reading/parsing it
+/// when `(mtime_ns, size)` are unchanged — on a large repo the dominant cost is reading every
+/// file, not parsing it. Keyed by repo-relative path in the [`ExtractionCache`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedFile {
+    pub mtime_ns: u64,
+    pub size: u64,
+    pub language: LanguageId,
+    pub hash: u64,
+    pub symbols: Vec<ExtractedSymbol>,
+    pub imports: Vec<RawImport>,
+    pub calls: Vec<RawCall>,
+}
 
-    // PHASE 1 — parallel parse + extract. Each file is independent (rayon, no GIL).
+/// Repo-relative path → its last phase-1 extraction. Persisted by the `cache` module and fed
+/// back into [`index_incremental`] to avoid redundant reads/parses.
+pub type ExtractionCache = HashMap<String, CachedFile>;
+
+/// Build the full map of `repo_root`, reading and parsing every file. A convenience wrapper over
+/// [`index_incremental`] for callers that don't keep an extraction cache (e.g. tests).
+pub fn index(repo_root: &Path, registry: &Registry) -> anyhow::Result<Graph> {
+    Ok(index_incremental(repo_root, registry, None)?.0)
+}
+
+/// Like [`index`], but reuse phase-1 results from `prev` for files whose `(mtime_ns, size)`
+/// match, re-reading/parsing only changed or new files — the big win on large repos, where the
+/// cost is reading every file, not parsing it. The graph is still rebuilt in full from the
+/// *complete current* file set (assemble + resolve + calls are cheap), so adds/deletes/renames
+/// stay correct — only the expensive per-file read+parse is skipped. Returns the graph plus a
+/// fresh [`ExtractionCache`] to persist for next time.
+///
+/// Set `COMPASS_TIMING=1` to print per-phase wall-clock to stderr — the cheap way to see where
+/// indexing a large repo spends its time (walk vs parse vs resolve).
+pub fn index_incremental(
+    repo_root: &Path,
+    registry: &Registry,
+    prev: Option<&ExtractionCache>,
+) -> anyhow::Result<(Graph, ExtractionCache)> {
+    let walk_t = PhaseTimer::start("walk");
+    let files = walk::walk(repo_root);
+    walk_t.stop(files.len());
+
+    // PHASE 1 — parallel parse + extract, reusing an unchanged file's cached extraction instead
+    // of re-reading it. Each file is independent (rayon, no GIL).
+    let parse_t = PhaseTimer::start("parse+extract");
     let parsed: Vec<Parsed> = files
         .par_iter()
-        .filter_map(|w| parse_one(w, registry))
+        .filter_map(|w| reuse_or_parse(w, registry, prev))
         .collect();
+    parse_t.stop(parsed.len());
 
     // Assemble nodes (single-writer). Keep each file's symbol ids in extraction order so a
     // `RawCall.caller`/callee index can be mapped back to a real `SymbolId` below.
+    let assemble_t = PhaseTimer::start("assemble");
     let mut graph = Graph::new();
     let mut symbol_ids: Vec<Vec<SymbolId>> = Vec::with_capacity(parsed.len());
     for p in &parsed {
@@ -45,14 +91,18 @@ pub fn index(repo_root: &Path, registry: &Registry) -> anyhow::Result<Graph> {
         }
         symbol_ids.push(ids);
     }
+    assemble_t.stop(graph.symbols().len());
 
     // Resolve calls into symbol→symbol edges (ADR-0002 keeps this language-agnostic: extractors
     // only emit raw caller/callee names). A `Calls` edge is added only when the callee is
     // unambiguous — the same-file symbol of that name, else a *unique* global match. Ambiguous
     // names (overloads, common method names) are skipped so we never draw a wrong edge.
+    let calls_t = PhaseTimer::start("resolve-calls");
     resolve_calls(&mut graph, &parsed, &symbol_ids);
+    calls_t.stop(graph.calls().len());
 
     // Build the language-agnostic resolution indices from the assembled files.
+    let index_t = PhaseTimer::start("build-indices");
     let mut by_path: HashMap<PathBuf, FileId> = HashMap::new();
     let mut by_dir: HashMap<PathBuf, Vec<FileId>> = HashMap::new();
     for f in graph.files() {
@@ -62,8 +112,10 @@ pub fn index(repo_root: &Path, registry: &Registry) -> anyhow::Result<Graph> {
             .or_default()
             .push(f.id);
     }
+    index_t.stop(by_path.len());
 
     // PHASE 2 — resolve imports via each language's own algorithm (through the trait).
+    let resolve_t = PhaseTimer::start("resolve-imports");
     let config = LangConfig;
     for p in &parsed {
         let Some(extractor) = registry.detect(&p.rel, None) else {
@@ -94,8 +146,78 @@ pub fn index(repo_root: &Path, registry: &Registry) -> anyhow::Result<Graph> {
             }
         }
     }
+    resolve_t.stop(graph.imports().len());
 
-    Ok(graph)
+    // Build the next extraction cache from this run's phase-1 results (move the vectors out —
+    // the graph already holds everything it needs).
+    let mut cache: ExtractionCache = HashMap::with_capacity(parsed.len());
+    for p in parsed {
+        cache.insert(
+            p.rel.to_string_lossy().into_owned(),
+            CachedFile {
+                mtime_ns: p.mtime_ns,
+                size: p.size,
+                language: p.language,
+                hash: p.hash,
+                symbols: p.symbols,
+                imports: p.imports,
+                calls: p.calls,
+            },
+        );
+    }
+
+    Ok((graph, cache))
+}
+
+/// Reuse `w`'s cached phase-1 extraction when `prev` has a fingerprint-matching entry (so the
+/// file is never read), otherwise read + parse it. A `(0, _)` mtime means metadata was
+/// unavailable at walk time → never a cache hit, so we re-read rather than trust a stale entry.
+fn reuse_or_parse(
+    w: &Walked,
+    registry: &Registry,
+    prev: Option<&ExtractionCache>,
+) -> Option<Parsed> {
+    if w.mtime_ns != 0 {
+        if let Some(cf) = prev.and_then(|p| p.get(w.rel.to_string_lossy().as_ref())) {
+            if cf.mtime_ns == w.mtime_ns && cf.size == w.size {
+                return Some(Parsed {
+                    rel: w.rel.clone(),
+                    language: cf.language.clone(),
+                    hash: cf.hash,
+                    symbols: cf.symbols.clone(),
+                    imports: cf.imports.clone(),
+                    calls: cf.calls.clone(),
+                    mtime_ns: w.mtime_ns,
+                    size: w.size,
+                });
+            }
+        }
+    }
+    parse_one(w, registry)
+}
+
+/// A wall-clock timer for one indexing phase, printed to stderr only when `COMPASS_TIMING` is
+/// set (so it's free in normal runs). `stop` reports the elapsed time and a phase-specific
+/// count (files, symbols, edges) — enough to see *where* a large index spends its time.
+struct PhaseTimer {
+    label: &'static str,
+    start: Option<std::time::Instant>,
+}
+
+impl PhaseTimer {
+    fn start(label: &'static str) -> Self {
+        let start = std::env::var_os("COMPASS_TIMING").map(|_| std::time::Instant::now());
+        PhaseTimer { label, start }
+    }
+    fn stop(self, count: usize) {
+        if let Some(start) = self.start {
+            eprintln!(
+                "compass-timing: {:<16} {:>10.3?}  ({count})",
+                self.label,
+                start.elapsed()
+            );
+        }
+    }
 }
 
 fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
@@ -111,6 +233,8 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         symbols: extraction.symbols,
         imports: extraction.imports,
         calls: extraction.calls,
+        mtime_ns: w.mtime_ns,
+        size: w.size,
     })
 }
 
