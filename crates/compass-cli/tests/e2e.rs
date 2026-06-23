@@ -333,14 +333,22 @@ fn mcp_lists_tools_and_resolves_dependencies() {
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"file_dependencies","arguments":{"file":"main.go"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"graph_stats","arguments":{}}}"#,
         ],
     );
-    // tools/list advertises all three tools.
+    // tools/list advertises the original tools...
     assert!(stdout.contains("file_dependencies"), "stdout:\n{stdout}");
     assert!(stdout.contains("broken_imports"), "stdout:\n{stdout}");
     assert!(stdout.contains("overview"), "stdout:\n{stdout}");
+    // ...and the three new graph tools.
+    assert!(stdout.contains("graph_stats"), "stdout:\n{stdout}");
+    assert!(stdout.contains("hubs"), "stdout:\n{stdout}");
+    assert!(stdout.contains("get_community"), "stdout:\n{stdout}");
     // file_dependencies(main.go) resolves the internal import.
     assert!(stdout.contains("util/util.go"), "stdout:\n{stdout}");
+    // graph_stats returns a sensible payload (its file_count field).
+    assert!(stdout.contains("file_count"), "stdout:\n{stdout}");
+    assert!(stdout.contains("community_count"), "stdout:\n{stdout}");
 }
 
 /// Drive a real MCP handshake over stdio and confirm the `overview` tool returns the map.

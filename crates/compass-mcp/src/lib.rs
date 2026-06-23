@@ -39,6 +39,13 @@ struct PathArgs {
     to: String,
 }
 
+/// Arguments for `get_community`: which structural community to list.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CommunityArgs {
+    /// The community id, as reported by `graph_stats`/`hubs` or shown on the visual map.
+    community: u32,
+}
+
 /// The MCP server. Holds a query handle and exposes the map as MCP tools.
 #[derive(Clone)]
 pub struct MapServer {
@@ -120,6 +127,43 @@ impl MapServer {
                 "{{\"error\":\"no path between {from} and {to} \
                  (one may be unmapped, or they are unconnected)\"}}"
             ),
+        }
+    }
+
+    #[tool(
+        description = "High-level repository stats: file, symbol, and import/call edge counts \
+                       (split into resolved vs heuristic), the number of structural communities \
+                       and bridging hubs, a per-language breakdown, and the most-connected files. \
+                       A cheap first read before deeper queries."
+    )]
+    async fn graph_stats(&self) -> String {
+        let stats = self.query.graph_stats();
+        serde_json::to_string_pretty(&stats)
+            .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize graph_stats: {e}\"}}"))
+    }
+
+    #[tool(
+        description = "The files that bridge many communities — shared hubs / \"god files\". \
+                       These are good entry points for understanding the architecture. Each \
+                       reports how many communities it bridges and its import degree."
+    )]
+    async fn hubs(&self) -> String {
+        serde_json::to_string_pretty(&self.query.hubs())
+            .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize hubs: {e}\"}}"))
+    }
+
+    #[tool(
+        description = "List the files in one community — a cohesive sub-part of the repo. Arg \
+                       `community` is a community id from `graph_stats`/`hubs` or the visual map. \
+                       Returns an error if the id is unknown."
+    )]
+    async fn get_community(
+        &self,
+        Parameters(CommunityArgs { community }): Parameters<CommunityArgs>,
+    ) -> String {
+        match self.query.community(community) {
+            Some(view) => serde_json::to_string_pretty(&view).unwrap_or_default(),
+            None => format!("{{\"error\":\"no community with id {community}\"}}"),
         }
     }
 }

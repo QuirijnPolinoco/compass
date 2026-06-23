@@ -416,6 +416,16 @@ pub trait MapQuery {
     /// (by seed-neighborhood, query-term match, or centrality), each with its symbols and
     /// imports/dependents.
     fn context(&self, request: &ContextRequest) -> ContextPack;
+    /// A richer-than-[`overview`](Self::overview) read of the whole map: edge counts split by
+    /// confidence, the number of structural communities and hubs, the per-language breakdown,
+    /// and the top-10 most-connected files. The cheap first call before deeper queries.
+    fn graph_stats(&self) -> GraphStats;
+    /// The files that bridge many communities — shared hubs / "god files" that are good entry
+    /// points for understanding the architecture. Sorted by communities bridged, then degree.
+    fn hubs(&self) -> Vec<HubFile>;
+    /// The files in one structural community (`id` from [`graph_view`](Self::graph_view) /
+    /// [`detect_communities`]). `None` if no file belongs to that community.
+    fn community(&self, id: u32) -> Option<CommunityView>;
 }
 
 /// A high-level summary of the map (FR-3/B1, the `overview` MCP tool).
@@ -568,52 +578,62 @@ pub struct ContextPack {
     pub selected_by: String,
 }
 
+/// A high-level, confidence-aware read of the whole map (the `graph_stats` MCP tool).
+///
+/// A superset of [`Overview`]: it splits import/call edges into resolved-vs-heuristic and adds
+/// the structural-clustering counts ([communities](Graph::community), [hubs](Graph::hubs)), so an
+/// agent can size up the repo before drilling in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphStats {
+    pub file_count: usize,
+    pub symbol_count: usize,
+    pub import_edge_count: usize,
+    /// Of `import_edge_count`, how many were resolved by convention rather than path-exactly.
+    pub heuristic_import_count: usize,
+    pub call_edge_count: usize,
+    /// Of `call_edge_count`, how many matched only by a globally-unique name (a guess).
+    pub heuristic_call_count: usize,
+    /// Number of distinct structural communities (Louvain over the import graph, ADR-0005).
+    pub community_count: usize,
+    /// Number of files flagged as community-bridging hubs.
+    pub hub_count: usize,
+    pub languages: Vec<LanguageStat>,
+    /// The top-10 files with the most import connections (in + out).
+    pub most_connected: Vec<ConnectedFile>,
+}
+
+/// A community-bridging file — a shared hub / "god file" (the `hubs` MCP tool).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubFile {
+    /// Repo-relative path.
+    pub file: String,
+    /// How many distinct communities its import-neighbors span.
+    pub communities_bridged: usize,
+    /// Its import degree (in + out).
+    pub degree: usize,
+}
+
+/// One structural community: the cohesive sub-part of the repo with this id (the `get_community`
+/// MCP tool).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityView {
+    pub id: u32,
+    pub size: usize,
+    /// Repo-relative paths of the member files, sorted.
+    pub files: Vec<String>,
+    /// Those members that are community-bridging hubs, sorted.
+    pub hubs: Vec<String>,
+}
+
 impl MapQuery for Graph {
     fn overview(&self) -> Overview {
-        let mut counts: HashMap<&str, usize> = HashMap::new();
-        for f in &self.files {
-            *counts.entry(f.language.as_str()).or_insert(0) += 1;
-        }
-        let mut languages: Vec<LanguageStat> = counts
-            .into_iter()
-            .map(|(l, c)| LanguageStat {
-                language: LanguageId::new(l),
-                file_count: c,
-            })
-            .collect();
-        languages.sort_by(|a, b| {
-            b.file_count
-                .cmp(&a.file_count)
-                .then_with(|| a.language.as_str().cmp(b.language.as_str()))
-        });
-        let mut degree: HashMap<FileId, usize> = HashMap::new();
-        for (from, to, _) in &self.imports {
-            *degree.entry(*from).or_insert(0) += 1;
-            *degree.entry(*to).or_insert(0) += 1;
-        }
-        let mut most_connected: Vec<ConnectedFile> = degree
-            .into_iter()
-            .filter_map(|(id, connections)| {
-                self.file_path(id).map(|p| ConnectedFile {
-                    file: p.to_string_lossy().into_owned(),
-                    connections,
-                })
-            })
-            .collect();
-        most_connected.sort_by(|a, b| {
-            b.connections
-                .cmp(&a.connections)
-                .then_with(|| a.file.cmp(&b.file))
-        });
-        most_connected.truncate(10);
-
         Overview {
             file_count: self.files.len(),
             symbol_count: self.symbols.len(),
             import_edge_count: self.imports.len(),
             diagnostic_count: self.diagnostics.len(),
-            languages,
-            most_connected,
+            languages: self.language_stats(),
+            most_connected: self.top_connected(10),
         }
     }
 
@@ -890,9 +910,144 @@ impl MapQuery for Graph {
             selected_by: selected_by.to_string(),
         }
     }
+
+    fn graph_stats(&self) -> GraphStats {
+        let heuristic_import_count = self
+            .imports
+            .iter()
+            .filter(|(_, _, c)| *c == EdgeConfidence::Heuristic)
+            .count();
+        let heuristic_call_count = self
+            .calls
+            .iter()
+            .filter(|(_, _, c)| *c == EdgeConfidence::Heuristic)
+            .count();
+
+        let (groups, is_hub) = self.detect_communities();
+        let community_count = groups.iter().collect::<HashSet<_>>().len();
+        let hub_count = is_hub.iter().filter(|&&h| h).count();
+
+        GraphStats {
+            file_count: self.files.len(),
+            symbol_count: self.symbols.len(),
+            import_edge_count: self.imports.len(),
+            heuristic_import_count,
+            call_edge_count: self.calls.len(),
+            heuristic_call_count,
+            community_count,
+            hub_count,
+            languages: self.language_stats(),
+            most_connected: self.top_connected(10),
+        }
+    }
+
+    fn hubs(&self) -> Vec<HubFile> {
+        let (groups, is_hub) = self.detect_communities();
+        let adj = self.import_adjacency();
+        let degree = self.degrees();
+
+        let mut hubs: Vec<HubFile> = (0..self.files.len())
+            .filter(|&i| is_hub[i])
+            .filter_map(|i| {
+                let id = FileId(i as u32);
+                let file = self.file_path(id)?.to_string_lossy().into_owned();
+                let communities_bridged = adj[i]
+                    .iter()
+                    .map(|nb| groups[nb.0 as usize])
+                    .collect::<HashSet<u32>>()
+                    .len();
+                Some(HubFile {
+                    file,
+                    communities_bridged,
+                    degree: degree.get(&id).copied().unwrap_or(0),
+                })
+            })
+            .collect();
+        hubs.sort_by(|a, b| {
+            b.communities_bridged
+                .cmp(&a.communities_bridged)
+                .then(b.degree.cmp(&a.degree))
+                .then_with(|| a.file.cmp(&b.file))
+        });
+        hubs
+    }
+
+    fn community(&self, id: u32) -> Option<CommunityView> {
+        let (groups, is_hub) = self.detect_communities();
+
+        let mut files: Vec<String> = Vec::new();
+        let mut hubs: Vec<String> = Vec::new();
+        for (i, &g) in groups.iter().enumerate() {
+            if g != id {
+                continue;
+            }
+            if let Some(path) = self.file_path(FileId(i as u32)) {
+                let path = path.to_string_lossy().into_owned();
+                if is_hub[i] {
+                    hubs.push(path.clone());
+                }
+                files.push(path);
+            }
+        }
+        if files.is_empty() {
+            return None;
+        }
+        files.sort();
+        hubs.sort();
+        Some(CommunityView {
+            id,
+            size: files.len(),
+            files,
+            hubs,
+        })
+    }
 }
 
 impl Graph {
+    /// Per-language file counts, sorted by count desc then language id asc. Shared by
+    /// [`overview`](MapQuery::overview) and [`graph_stats`](MapQuery::graph_stats).
+    fn language_stats(&self) -> Vec<LanguageStat> {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for f in &self.files {
+            *counts.entry(f.language.as_str()).or_insert(0) += 1;
+        }
+        let mut languages: Vec<LanguageStat> = counts
+            .into_iter()
+            .map(|(l, c)| LanguageStat {
+                language: LanguageId::new(l),
+                file_count: c,
+            })
+            .collect();
+        languages.sort_by(|a, b| {
+            b.file_count
+                .cmp(&a.file_count)
+                .then_with(|| a.language.as_str().cmp(b.language.as_str()))
+        });
+        languages
+    }
+
+    /// The `max` most import-connected files as [`ConnectedFile`]s (degree desc, path asc).
+    /// Shared by [`overview`](MapQuery::overview) and [`graph_stats`](MapQuery::graph_stats).
+    fn top_connected(&self, max: usize) -> Vec<ConnectedFile> {
+        let mut most_connected: Vec<ConnectedFile> = self
+            .degrees()
+            .into_iter()
+            .filter_map(|(id, connections)| {
+                self.file_path(id).map(|p| ConnectedFile {
+                    file: p.to_string_lossy().into_owned(),
+                    connections,
+                })
+            })
+            .collect();
+        most_connected.sort_by(|a, b| {
+            b.connections
+                .cmp(&a.connections)
+                .then_with(|| a.file.cmp(&b.file))
+        });
+        most_connected.truncate(max);
+        most_connected
+    }
+
     /// File import degree (in + out), keyed by `FileId`.
     fn degrees(&self) -> HashMap<FileId, usize> {
         let mut deg: HashMap<FileId, usize> = HashMap::new();
@@ -1346,5 +1501,86 @@ mod tests {
         assert_eq!(pack.selected_by, "most-connected");
         assert_eq!(pack.files.len(), 2);
         assert_eq!(pack.file_count, 8);
+    }
+
+    #[test]
+    fn graph_stats_counts_communities_hubs_and_edge_confidence() {
+        let mut g = bridged_graph();
+        // bridged_graph is 8 files / 8 all-resolved imports across 3 communities + 1 hub.
+        // Add one *intra-cluster* heuristic import (so it doesn't merge communities) plus a
+        // resolved + a heuristic call edge, so the confidence split is non-trivial.
+        let page = g.file_id(Path::new("src/ui/page.rs")).unwrap();
+        let button = g.file_id(Path::new("src/ui/button.rs")).unwrap();
+        g.add_import(page, button, EdgeConfidence::Heuristic);
+        let span = Span {
+            start_byte: 0,
+            end_byte: 1,
+            start_row: 0,
+            start_col: 0,
+        };
+        let a = g.add_symbol("render".into(), SymbolKind::Function, page, span);
+        let b = g.add_symbol("draw".into(), SymbolKind::Function, button, span);
+        g.add_call(a, b, EdgeConfidence::Resolved);
+        g.add_call(b, a, EdgeConfidence::Heuristic);
+
+        let stats = g.graph_stats();
+        assert_eq!(stats.file_count, 8);
+        assert_eq!(stats.symbol_count, 2);
+        // 8 resolved imports + the 1 heuristic one we added.
+        assert_eq!(stats.import_edge_count, 9);
+        assert_eq!(stats.heuristic_import_count, 1);
+        assert_eq!(stats.call_edge_count, 2);
+        assert_eq!(stats.heuristic_call_count, 1);
+        // Three cohesive clusters; one shared util hub.
+        assert_eq!(stats.community_count, 3);
+        assert_eq!(stats.hub_count, 1);
+        // Reused overview data is present.
+        assert!(!stats.languages.is_empty());
+        assert!(!stats.most_connected.is_empty());
+    }
+
+    #[test]
+    fn hubs_returns_the_bridging_file() {
+        let g = bridged_graph();
+        let hubs = g.hubs();
+        assert_eq!(hubs.len(), 1);
+        let util = &hubs[0];
+        assert_eq!(util.file, "src/util/log.rs");
+        // It bridges all three communities and is imported by one file from each.
+        assert_eq!(util.communities_bridged, 3);
+        assert_eq!(util.degree, 3);
+    }
+
+    #[test]
+    fn community_returns_its_members_and_none_for_unknown_id() {
+        let g = bridged_graph();
+        // The auth cluster's community id (whatever Louvain assigned it).
+        let view = g.graph_view(false);
+        let auth_id = group_of(&view, "src/auth/login.rs");
+
+        let community = g.community(auth_id).expect("auth community exists");
+        assert_eq!(community.id, auth_id);
+        assert_eq!(community.size, 3);
+        assert_eq!(
+            community.files,
+            vec![
+                "src/auth/login.rs".to_string(),
+                "src/auth/session.rs".to_string(),
+                "src/auth/token.rs".to_string(),
+            ]
+        );
+        // The auth cluster has no hub of its own (the util lives in its own community).
+        assert!(community.hubs.is_empty());
+
+        // The util's community contains exactly the hub file.
+        let util_id = group_of(&view, "src/util/log.rs");
+        let util_community = g.community(util_id).unwrap();
+        assert_eq!(util_community.hubs, vec!["src/util/log.rs".to_string()]);
+
+        // An id no file belongs to → None.
+        let unknown = (0..u32::MAX)
+            .find(|&id| g.community(id).is_none())
+            .expect("some id is unused");
+        assert!(g.community(unknown).is_none());
     }
 }
