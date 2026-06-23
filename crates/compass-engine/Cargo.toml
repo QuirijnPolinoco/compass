@@ -16,3 +16,10 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify-debouncer-mini = "0.7.0"
+
+[dev-dependencies]
+# Tests only: a real extractor to drive index() end-to-end (call resolution). Language crates
+# are wired into the binary at the CLI composition root (ADR-0003); this dev-dep never links
+# into the shipped artifact.
+compass-lang-rust = { path = "../compass-lang-rust" }
+compass-core.workspace = true

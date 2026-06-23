@@ -16,7 +16,7 @@ engine -> engine : walk (respect .gitignore)\n+ detect language from registry
 == Phase 1 — per file, parallel (rayon) ==
 loop per file
   engine -> ext : extract(file, tree)  [tree-sitter parse]
-  ext --> engine : symbols + raw imports
+  ext --> engine : symbols + raw imports + raw calls
   engine -> core : add File / Symbol nodes + Defines/Calls edges
 end
 

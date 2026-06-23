@@ -38,7 +38,15 @@ impl Extractor for TemplateExtractor {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
         visit(tree.root_node(), source, &mut symbols, &mut imports);
-        Extraction { symbols, imports }
+        Extraction {
+            symbols,
+            imports,
+            // Optional: a call graph for the visual map. Leave empty unless your grammar makes
+            // caller→callee easy to capture; see compass-lang-rust for an example. Each `RawCall`
+            // names a callee that the engine resolves to a symbol (same-file first, else a unique
+            // global match — ambiguous names are skipped, so this never invents a wrong edge).
+            calls: Vec::new(),
+        }
     }
 
     fn resolve(

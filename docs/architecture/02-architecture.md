@@ -85,7 +85,7 @@ features); core, engine, and mcp never do.
 | Component (crate) | Responsibility (one line) | Talks to |
 |-------------------|---------------------------|----------|
 | `compass-core` | Language-agnostic domain: graph model, `File`/`Symbol`/edge types, `LanguageId`, cross-crate `Diagnostic`, query engine + a query **port** trait (`overview`, `file_dependencies`, `broken_imports`; `graph_view`, `subgraph`, `shortest_path` per ADR-0005; `context` per ADR-0006). Owns the serde-serialized form (versioned). | (depended on by everything) |
-| `compass-extract` | The **stable contract**: the `Extractor` trait (two phases — `extract` + `resolve`), the tree-sitter parse harness, `RawImport`, `ResolutionContext`, `Detection { extensions, shebangs }`, an opaque `LangConfig` carrier, the unresolved/extractor error variant, and the `Registry` + `register` entry point | `compass-core` |
+| `compass-extract` | The **stable contract**: the `Extractor` trait (two phases — `extract` + `resolve`), the tree-sitter parse harness, `RawImport`, `RawCall`, `ResolutionContext`, `Detection { extensions, shebangs }`, an opaque `LangConfig` carrier, the unresolved/extractor error variant, and the `Registry` + `register` entry point | `compass-core` |
 | `compass-engine` | Orchestrate full/incremental indexing. Internal modules: `walk` (gitignore-aware walk + registry-driven detection), `index` (rayon parse+extract, builds the `ResolutionContext`, calls `Extractor::resolve`, assembles the graph), `cache` (`.compass/` persistence), `watch` (live re-mapping, FR-13); `config` (`.compass.toml`) is planned. | `compass-core`, `compass-extract` |
 | `compass-mcp` | Expose query operations as MCP tools over stdio (`rmcp`) — `overview`, `file_dependencies`, `broken_imports`, plus `subgraph` and `shortest_path` (ADR-0005); `schemars` DTO wrappers own the wire schema | `compass-core` (query types + query **port**) — **not** the engine |
 | `compass-viz` | Serve the interactive force-directed **visual map** to the browser: a `127.0.0.1` HTTP server (`tiny_http`) with SSE live-push, and a self-contained `map.html` snapshot. Vendors **Cytoscape.js** (embedded offline) and owns its render DTOs (Cytoscape element JSON). Like `compass-mcp`, depends on `compass-core`'s query **port** — **not** the engine (ADR-0005) | `compass-core` (query **port**) |
@@ -121,7 +121,7 @@ form live in `compass-core` (ADR-0004).
 | `Symbol` node | `compass-core` | same | name, kind (function/class/method/…), defining file, source span |
 | `Imports` edge | `compass-core` | same | File → File, produced by the `resolve` phase; unresolved targets become `Diagnostic`s (FR-12/D2) |
 | `Defines` edge | `compass-core` | same | File → Symbol |
-| `Calls` edge | `compass-core` | same | Symbol → Symbol |
+| `Calls` edge | `compass-core` | same | Symbol → Symbol; resolved by the engine from each extractor's raw calls (same-file match, else a unique global one; ambiguous skipped). Emitted by the Rust extractor today; other languages opt in per crate |
 | `References` edge | `compass-core` | same | File → File; reserved for HTML/CSS link/asset edges (FR-19/H4) |
 | `Diagnostic` | `compass-core` | in-memory + surfaced via MCP | non-fatal per-file issues: parse errors, unresolved imports — the universal sink |
 
@@ -156,8 +156,10 @@ compass-cli → compass-engine::index
   → engine::walk (ignore: parallel, .gitignore-aware; language detection from the registry)
   → PHASE 1 — per file, parallel (rayon):
         compass-extract parses with tree-sitter
-        → Extractor::extract(file, tree) → { symbols, raw_imports }
-        → assemble File/Symbol nodes + Defines/Calls edges into compass-core
+        → Extractor::extract(file, tree) → { symbols, raw_imports, raw_calls }
+        → assemble File/Symbol nodes + Defines edges into compass-core
+  → resolve raw_calls → Calls edges (Symbol → Symbol): same-file name match first, else a
+        unique global match; ambiguous names are skipped (no guessed edge). Language-agnostic.
   → engine builds a ResolutionContext (read-only path→FileId over all File nodes)
   → PHASE 2 — per file:
         Extractor::resolve(raw_imports, &ResolutionContext, &lang_config)

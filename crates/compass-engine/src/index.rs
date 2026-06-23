@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use compass_core::{Diagnostic, DiagnosticKind, FileId, Graph, LanguageId};
+use compass_core::{Diagnostic, DiagnosticKind, FileId, Graph, LanguageId, SymbolId};
 use compass_extract::{
-    ExtractedSymbol, LangConfig, RawImport, Registry, ResolutionContext, ResolvedImport,
+    ExtractedSymbol, LangConfig, RawCall, RawImport, Registry, ResolutionContext, ResolvedImport,
 };
 use rayon::prelude::*;
 
@@ -20,6 +20,7 @@ struct Parsed {
     hash: u64,
     symbols: Vec<ExtractedSymbol>,
     imports: Vec<RawImport>,
+    calls: Vec<RawCall>,
 }
 
 /// Build the full map of `repo_root` using the compiled-in language extractors.
@@ -32,14 +33,24 @@ pub fn index(repo_root: &Path, registry: &Registry) -> anyhow::Result<Graph> {
         .filter_map(|w| parse_one(w, registry))
         .collect();
 
-    // Assemble nodes (single-writer).
+    // Assemble nodes (single-writer). Keep each file's symbol ids in extraction order so a
+    // `RawCall.caller`/callee index can be mapped back to a real `SymbolId` below.
     let mut graph = Graph::new();
+    let mut symbol_ids: Vec<Vec<SymbolId>> = Vec::with_capacity(parsed.len());
     for p in &parsed {
         let fid = graph.add_file(p.rel.clone(), p.language.clone(), p.hash);
+        let mut ids = Vec::with_capacity(p.symbols.len());
         for s in &p.symbols {
-            graph.add_symbol(s.name.clone(), s.kind, fid, s.span);
+            ids.push(graph.add_symbol(s.name.clone(), s.kind, fid, s.span));
         }
+        symbol_ids.push(ids);
     }
+
+    // Resolve calls into symbol→symbol edges (ADR-0002 keeps this language-agnostic: extractors
+    // only emit raw caller/callee names). A `Calls` edge is added only when the callee is
+    // unambiguous — the same-file symbol of that name, else a *unique* global match. Ambiguous
+    // names (overloads, common method names) are skipped so we never draw a wrong edge.
+    resolve_calls(&mut graph, &parsed, &symbol_ids);
 
     // Build the language-agnostic resolution indices from the assembled files.
     let mut by_path: HashMap<PathBuf, FileId> = HashMap::new();
@@ -99,7 +110,52 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         hash: content_hash(&bytes),
         symbols: extraction.symbols,
         imports: extraction.imports,
+        calls: extraction.calls,
     })
+}
+
+/// Turn raw caller/callee names into `Calls` edges. Conservative by design: a call resolves to
+/// the same-file symbol of that name first, otherwise to a *unique* global match — names that
+/// occur in more than one file (and aren't local) are left unresolved rather than guessed.
+fn resolve_calls(graph: &mut Graph, parsed: &[Parsed], symbol_ids: &[Vec<SymbolId>]) {
+    // Global name → symbol ids (across the whole repo).
+    let mut by_name: HashMap<&str, Vec<SymbolId>> = HashMap::new();
+    for (pi, p) in parsed.iter().enumerate() {
+        for (si, s) in p.symbols.iter().enumerate() {
+            by_name
+                .entry(s.name.as_str())
+                .or_default()
+                .push(symbol_ids[pi][si]);
+        }
+    }
+
+    for (pi, p) in parsed.iter().enumerate() {
+        if p.calls.is_empty() {
+            continue;
+        }
+        let ids = &symbol_ids[pi];
+        // Same-file name → symbol id (first definition wins).
+        let mut local: HashMap<&str, SymbolId> = HashMap::new();
+        for (si, s) in p.symbols.iter().enumerate() {
+            local.entry(s.name.as_str()).or_insert(ids[si]);
+        }
+        for call in &p.calls {
+            let Some(&caller) = ids.get(call.caller) else {
+                continue;
+            };
+            let target = local.get(call.callee.as_str()).copied().or_else(|| {
+                match by_name.get(call.callee.as_str()) {
+                    Some(matches) if matches.len() == 1 => Some(matches[0]),
+                    _ => None,
+                }
+            });
+            if let Some(callee) = target {
+                if callee != caller {
+                    graph.add_call(caller, callee);
+                }
+            }
+        }
+    }
 }
 
 fn content_hash(bytes: &[u8]) -> u64 {

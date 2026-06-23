@@ -33,11 +33,26 @@ pub struct RawImport {
     pub span: Span,
 }
 
+/// A call discovered in a file (phase 1), before it is resolved to a symbol.
+///
+/// `caller` indexes into the same [`Extraction`]'s `symbols` (the enclosing function/method);
+/// `callee` is the called name. The engine resolves `callee` to a `SymbolId` — same-file
+/// first, then a unique global match — and skips ambiguous names, so a `Calls` edge is only
+/// ever added when the target is unambiguous. Extractors that don't track calls leave this
+/// empty (it defaults to `[]`).
+#[derive(Debug, Clone)]
+pub struct RawCall {
+    pub caller: usize,
+    pub callee: String,
+    pub span: Span,
+}
+
 /// Output of the per-file `extract` phase.
 #[derive(Debug, Default)]
 pub struct Extraction {
     pub symbols: Vec<ExtractedSymbol>,
     pub imports: Vec<RawImport>,
+    pub calls: Vec<RawCall>,
 }
 
 /// Outcome of resolving one raw import in the `resolve` phase.

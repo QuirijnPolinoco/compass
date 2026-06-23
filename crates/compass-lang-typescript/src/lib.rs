@@ -50,7 +50,11 @@ impl Extractor for TypeScriptExtractor {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
         visit(tree.root_node(), source, &mut symbols, &mut imports);
-        Extraction { symbols, imports }
+        Extraction {
+            symbols,
+            imports,
+            calls: Vec::new(),
+        }
     }
 
     fn resolve(

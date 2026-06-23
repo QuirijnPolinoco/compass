@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -48,10 +48,21 @@ impl Extractor for RustExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, false, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut walker = Walk {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        walker.visit(tree.root_node(), false, None);
         // A file may `use` the same crate many times; one edge per crate is enough.
         dedup_crate_imports(&mut imports);
-        Extraction { symbols, imports }
+        Extraction {
+            symbols,
+            imports,
+            calls,
+        }
     }
 
     fn resolve(
@@ -303,111 +314,151 @@ fn extern_crate_root(node: Node, src: &[u8]) -> Option<String> {
     Some(name.utf8_text(src).ok()?.to_string())
 }
 
-fn visit(
-    node: Node,
-    src: &[u8],
-    in_impl: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    match node.kind() {
-        "function_item" => {
-            let kind = if in_impl {
-                SymbolKind::Method
-            } else {
-                SymbolKind::Function
-            };
-            push_named(node, "name", kind, src, symbols);
-            recurse(node, src, false, symbols, imports);
-            return;
-        }
-        "impl_item" => {
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "trait_item" => {
-            push_named(node, "name", SymbolKind::Interface, src, symbols);
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "mod_item" => {
-            push_named(node, "name", SymbolKind::Module, src, symbols);
-            // `mod foo;` (no inline body) pulls in a file; `mod foo { .. }` does not.
-            if !has_child_kind(node, "declaration_list") {
-                if let Some(name) = node.child_by_field_name("name") {
-                    if let Ok(text) = name.utf8_text(src) {
-                        imports.push(RawImport {
-                            specifier: text.to_string(),
-                            span: span_of(name),
+/// Phase-1 traversal state. Bundling the sinks (and source) avoids threading five mutable
+/// parameters through every recursion; the per-node flags `in_impl` / `current_fn` stay
+/// arguments because they change as we descend.
+struct Walk<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Walk<'_> {
+    /// `in_impl`: inside an `impl`/`trait` body (so `fn`s are methods). `current_fn`: the
+    /// `symbols` index of the enclosing function, to which calls in this subtree are attributed
+    /// (`None` at module scope — top-level calls aren't attributable to a symbol).
+    fn visit(&mut self, node: Node, in_impl: bool, current_fn: Option<usize>) {
+        match node.kind() {
+            "function_item" => {
+                let kind = if in_impl {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                };
+                // The fn's symbol lands at `idx`; calls in its body attribute to it (if it got
+                // a symbol at all — otherwise keep the parent as caller).
+                let idx = self.symbols.len();
+                push_named(node, "name", kind, self.src, self.symbols);
+                let caller = if self.symbols.len() > idx {
+                    Some(idx)
+                } else {
+                    current_fn
+                };
+                self.recurse(node, false, caller);
+                return;
+            }
+            "impl_item" => {
+                self.recurse(node, true, current_fn);
+                return;
+            }
+            "trait_item" => {
+                push_named(node, "name", SymbolKind::Interface, self.src, self.symbols);
+                self.recurse(node, true, current_fn);
+                return;
+            }
+            "mod_item" => {
+                push_named(node, "name", SymbolKind::Module, self.src, self.symbols);
+                // `mod foo;` (no inline body) pulls in a file; `mod foo { .. }` does not.
+                if !has_child_kind(node, "declaration_list") {
+                    if let Some(name) = node.child_by_field_name("name") {
+                        if let Ok(text) = name.utf8_text(self.src) {
+                            self.imports.push(RawImport {
+                                specifier: text.to_string(),
+                                span: span_of(name),
+                            });
+                        }
+                    }
+                }
+                self.recurse(node, false, current_fn);
+                return;
+            }
+            "use_declaration" => {
+                // Cross-crate dependency: the first path segment is the crate root.
+                if let Some(root) = use_crate_root(node, self.src) {
+                    self.imports.push(RawImport {
+                        specifier: format!("{USE_PREFIX}{root}"),
+                        span: span_of(node),
+                    });
+                }
+                return; // a `use` declares no symbols
+            }
+            "extern_crate_declaration" => {
+                if let Some(root) = extern_crate_root(node, self.src) {
+                    self.imports.push(RawImport {
+                        specifier: format!("{USE_PREFIX}{root}"),
+                        span: span_of(node),
+                    });
+                }
+                return;
+            }
+            "struct_item" | "union_item" => {
+                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols)
+            }
+            "enum_item" => push_named(node, "name", SymbolKind::Enum, self.src, self.symbols),
+            "type_item" => push_named(node, "name", SymbolKind::Other, self.src, self.symbols),
+            "const_item" | "static_item" => {
+                push_named(node, "name", SymbolKind::Constant, self.src, self.symbols)
+            }
+            // A function/macro call. We attribute only *plain* `foo(..)` calls (callee is a bare
+            // identifier) to the enclosing fn — method calls (`x.foo()`) and path calls
+            // (`a::foo()`) need receiver/type resolution we don't do, so they're left for the
+            // engine to never see rather than guessed at. Falls through to recurse so calls
+            // nested in the arguments are still captured.
+            "call_expression" => {
+                if let Some(caller) = current_fn {
+                    if let Some(callee) = plain_callee_name(node, self.src) {
+                        self.calls.push(RawCall {
+                            caller,
+                            callee,
+                            span: span_of(node),
                         });
                     }
                 }
             }
-            recurse(node, src, false, symbols, imports);
-            return;
-        }
-        "use_declaration" => {
-            // Cross-crate dependency: the first path segment is the crate root.
-            if let Some(root) = use_crate_root(node, src) {
-                imports.push(RawImport {
-                    specifier: format!("{USE_PREFIX}{root}"),
-                    span: span_of(node),
-                });
+            // Cross-crate refs written as a fully-qualified PATH with no `use`, e.g.
+            // `apis_core::Price(..)`. Capture the leading segment when it looks like a crate
+            // (lowercase — so `String::new`/`Vec::<T>`/`Self::` are skipped); `resolve` keeps
+            // only the ones that are workspace crates. Falls through to recurse, so a crate ref
+            // nested in generics (`Vec<other::Thing>`) is still caught.
+            "scoped_identifier" | "scoped_type_identifier" => {
+                if let Some(root) = node
+                    .utf8_text(self.src)
+                    .ok()
+                    .and_then(crate_root_of)
+                    .filter(|r| r.starts_with(|c: char| c.is_ascii_lowercase()))
+                {
+                    self.imports.push(RawImport {
+                        specifier: format!("{USE_PREFIX}{root}"),
+                        span: span_of(node),
+                    });
+                }
             }
-            return; // a `use` declares no symbols
+            _ => {}
         }
-        "extern_crate_declaration" => {
-            if let Some(root) = extern_crate_root(node, src) {
-                imports.push(RawImport {
-                    specifier: format!("{USE_PREFIX}{root}"),
-                    span: span_of(node),
-                });
-            }
-            return;
-        }
-        "struct_item" | "union_item" => push_named(node, "name", SymbolKind::Struct, src, symbols),
-        "enum_item" => push_named(node, "name", SymbolKind::Enum, src, symbols),
-        "type_item" => push_named(node, "name", SymbolKind::Other, src, symbols),
-        "const_item" | "static_item" => {
-            push_named(node, "name", SymbolKind::Constant, src, symbols)
-        }
-        // Cross-crate refs written as a fully-qualified PATH with no `use`, e.g.
-        // `apis_core::Price(..)`. Capture the leading segment when it looks like a crate
-        // (lowercase — so `String::new`/`Vec::<T>`/`Self::` are skipped); `resolve` keeps
-        // only the ones that are workspace crates. Falls through to recurse, so a crate ref
-        // nested in generics (`Vec<other::Thing>`) is still caught.
-        "scoped_identifier" | "scoped_type_identifier" => {
-            if let Some(root) = node
-                .utf8_text(src)
-                .ok()
-                .and_then(crate_root_of)
-                .filter(|r| r.starts_with(|c: char| c.is_ascii_lowercase()))
-            {
-                imports.push(RawImport {
-                    specifier: format!("{USE_PREFIX}{root}"),
-                    span: span_of(node),
-                });
-            }
-        }
-        _ => {}
+        self.recurse(node, in_impl, current_fn);
     }
-    recurse(node, src, in_impl, symbols, imports);
+
+    fn recurse(&mut self, node: Node, in_impl: bool, current_fn: Option<usize>) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, in_impl, current_fn);
+            }
+            i += 1;
+        }
+    }
 }
 
-fn recurse(
-    node: Node,
-    src: &[u8],
-    in_impl: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, in_impl, symbols, imports);
-        }
-        i += 1;
+/// The callee name of a `call_expression` *only* when it's a bare identifier (`foo(..)`).
+/// Returns `None` for method calls (`x.foo()` — a `field_expression`) and path calls
+/// (`a::b()` — a `scoped_identifier`), which we don't attempt to resolve.
+fn plain_callee_name(node: Node, src: &[u8]) -> Option<String> {
+    let function = node.child_by_field_name("function")?;
+    if function.kind() != "identifier" {
+        return None;
     }
+    Some(function.utf8_text(src).ok()?.to_string())
 }
 
 fn has_child_kind(node: Node, kind: &str) -> bool {
@@ -602,6 +653,70 @@ fn build() -> apis_core::Money {
         assert!(!specs.iter().any(|s| s.contains("String")));
         // Deduped: `apis_core` appears 3× in source but once in imports.
         assert_eq!(specs.iter().filter(|s| *s == "use:apis_core").count(), 1);
+    }
+
+    #[test]
+    fn captures_plain_calls_attributed_to_the_enclosing_fn() {
+        // `alpha` calls `helper` (plain) and `beta` (plain); the method call `s.len()` and the
+        // path call `std::mem::swap(..)` are NOT captured (we don't resolve receivers/paths).
+        // The top-level call in `main` IS attributed to `main`.
+        let src = r#"
+fn helper() {}
+fn beta() {}
+
+fn alpha() {
+    helper();
+    beta();
+    let s = String::new();
+    s.len();
+    std::mem::swap(&mut 1, &mut 2);
+}
+
+fn main() {
+    alpha();
+}
+"#;
+        let ex = extract(src);
+        // Map symbol name -> its index, to read calls as (caller_name, callee).
+        let names: Vec<&str> = ex.symbols.iter().map(|s| s.name.as_str()).collect();
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (names[c.caller].to_string(), c.callee.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("alpha".to_string(), "beta".to_string()),
+                ("alpha".to_string(), "helper".to_string()),
+                ("main".to_string(), "alpha".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_attribute_calls_at_module_scope() {
+        // A call in a `const`/`static` initializer has no enclosing fn → not captured (we never
+        // invent a caller). Methods inside an impl attribute to the method.
+        let src = r#"
+fn make() -> u32 { 0 }
+const N: u32 = make();
+
+struct S;
+impl S {
+    fn run(&self) { make(); }
+}
+"#;
+        let ex = extract(src);
+        let names: Vec<&str> = ex.symbols.iter().map(|s| s.name.as_str()).collect();
+        let got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (names[c.caller].to_string(), c.callee.clone()))
+            .collect();
+        // Only the call inside `run` is attributed; the `const` initializer call is dropped.
+        assert_eq!(got, [("run".to_string(), "make".to_string())]);
     }
 
     #[test]

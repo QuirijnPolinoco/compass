@@ -173,6 +173,12 @@ impl Graph {
         &self.imports
     }
 
+    /// Resolved symbol→symbol call edges (caller, callee). Populated by the engine from each
+    /// extractor's raw calls; only unambiguous targets become edges (see `compass-engine`).
+    pub fn calls(&self) -> &[(SymbolId, SymbolId)] {
+        &self.calls
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
