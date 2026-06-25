@@ -16,6 +16,9 @@ pub const INDEX_HTML: &str = include_str!("../assets/index.html");
 pub const APP_JS: &str = include_str!("../assets/app.js");
 pub const APP_CSS: &str = include_str!("../assets/app.css");
 pub const CYTOSCAPE_JS: &str = include_str!("../assets/cytoscape.umd.min.js");
+/// The read-only token-savings dashboard (`GET /tokens`); reuses `/app.css`, fetches
+/// `/api/session-tokens`, and ships no external assets — fully offline.
+pub const TOKENS_HTML: &str = include_str!("../assets/tokens.html");
 
 /// The full payload `GET /graph` returns: the map's current version plus its elements.
 #[derive(Serialize)]

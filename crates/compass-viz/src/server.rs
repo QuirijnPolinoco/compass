@@ -99,6 +99,17 @@ fn handle(request: Request, state: &Arc<MapState>) {
         ),
         "/graph" => serve_graph(request, state, &raw),
         "/subgraph" => serve_subgraph(request, state, &raw),
+        // Read-only local token-savings dashboard (loopback only): the page and the JSON it
+        // fetches, aggregated from `<repo>/.compass/sessions/*.tokens.json`.
+        "/tokens" => serve_str(
+            request,
+            crate::render::TOKENS_HTML,
+            "text/html; charset=utf-8",
+        ),
+        "/api/session-tokens" => serve_json(
+            request,
+            crate::session_tokens::summary_json(state.repo_root()),
+        ),
         "/events" => {
             // SSE holds the connection open; run it off the accept loop.
             let state = Arc::clone(state);

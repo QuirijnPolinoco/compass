@@ -12,3 +12,7 @@ compass-core.workspace = true
 tiny_http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Throwaway repos for the session-tokens aggregation unit tests.
+tempfile = "3"

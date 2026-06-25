@@ -137,6 +137,7 @@ dependencies = [
  "compass-lang-typescript",
  "compass-mcp",
  "compass-viz",
+ "serde",
  "serde_json",
 ]
 
@@ -294,6 +295,7 @@ dependencies = [
  "compass-core",
  "serde",
  "serde_json",
+ "tempfile",
  "tiny_http",
 ]
 

@@ -165,6 +165,19 @@ body {
 #fit:hover { background: var(--accent-soft); border-color: var(--accent); }
 #fit:active { transform: translateY(1px); }
 
+/* Subtle link out to the read-only token-savings dashboard (live mode only). */
+#tokens-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-md);
+  white-space: nowrap;
+  padding: var(--s2) var(--s2);
+  border-radius: var(--radius-sm);
+  transition: color 160ms ease, background 160ms ease;
+}
+#tokens-link:hover { color: var(--accent); background: var(--accent-soft); }
+#tokens-link:focus-visible { outline: none; box-shadow: var(--ring); }
+
 /* ---- legend --------------------------------------------------------------- */
 #legend {
   position: absolute;

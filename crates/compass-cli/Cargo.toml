@@ -17,6 +17,7 @@ compass-extract.workspace = true
 compass-engine.workspace = true
 compass-mcp.workspace = true
 compass-viz.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 # Language crates are optional + feature-gated; the composition root selects them.

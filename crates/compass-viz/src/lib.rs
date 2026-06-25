@@ -10,13 +10,16 @@
 
 mod render;
 mod server;
+mod session_tokens;
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use compass_core::{GraphView, MapQuery, Subgraph};
 
 pub use server::{bind, VizServer};
+pub use session_tokens::{aggregate_session_tokens, SessionTokenSummary, SessionTokens};
 
 /// The uncommon high default port (ADR-0005): clear of typical dev servers, databases, and
 /// container/registry ports, so it won't collide with the user's other work. If it's busy,
@@ -37,15 +40,25 @@ struct Inner {
 pub struct MapState {
     inner: Mutex<Inner>,
     changed: Condvar,
+    /// Repo root the map was indexed from, so read-only local routes (the token-savings
+    /// dashboard) can read `<repo>/.compass/sessions/`. Never written; loopback + read-only.
+    repo_root: PathBuf,
 }
 
 impl MapState {
-    /// Create state seeded with the initial map.
-    pub fn new(query: Query) -> Arc<Self> {
+    /// Create state seeded with the initial map and the repo root it was indexed from.
+    /// Snapshot mode and tests can pass `"."` or any path; only the `/tokens` routes read it.
+    pub fn new(query: Query, repo_root: PathBuf) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner { query, version: 0 }),
             changed: Condvar::new(),
+            repo_root,
         })
+    }
+
+    /// Repo root for the read-only local token-savings routes.
+    pub(crate) fn repo_root(&self) -> &Path {
+        &self.repo_root
     }
 
     /// Replace the map with a freshly-indexed one and wake every open SSE stream so the

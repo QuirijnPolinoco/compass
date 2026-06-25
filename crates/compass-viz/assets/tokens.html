@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compass — token savings</title>
+  <!-- Reuse the map's design tokens + base styling; everything below is offline + read-only. -->
+  <link rel="stylesheet" href="/app.css">
+  <style>
+    /* This is a scrollable document, not the full-screen map — undo the map's viewport lock. */
+    html, body { overflow: auto; height: auto; min-height: 100%; }
+    body { background: radial-gradient(120% 90% at 50% 0%, #161a26 0%, var(--bg-0) 60%); }
+
+    .wrap { max-width: 880px; margin: 0 auto; padding: var(--s6) var(--s4); }
+    .top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; }
+    h1 { font-size: 20px; font-weight: 600; margin: 0; }
+    .badge {
+      display: inline-block; margin-left: var(--s2); padding: 1px 8px; border-radius: 999px;
+      font-size: 11px; color: var(--accent); background: var(--accent-soft);
+      border: 1px solid var(--border); vertical-align: middle;
+    }
+    .back { color: var(--accent); text-decoration: none; font-size: var(--fs-md); white-space: nowrap; }
+    .back:hover { text-decoration: underline; }
+    .sub { color: var(--muted); font-size: var(--fs-md); margin: var(--s3) 0 var(--s5); max-width: 70ch; }
+    .sub code {
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: 4px;
+      padding: 1px 5px; font-size: 12px;
+    }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s3); margin-bottom: var(--s5); }
+    .card { padding: var(--s4); background: var(--panel-solid); border: 1px solid var(--border); border-radius: var(--radius); }
+    .card .num { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .card.saved .num { color: var(--live); }
+    .card .lbl { color: var(--muted); font-size: var(--fs-sm); margin-top: var(--s1); }
+
+    table { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
+    caption {
+      text-align: left; color: var(--faint); text-transform: uppercase; letter-spacing: 0.6px;
+      font-size: 10px; margin-bottom: var(--s2);
+    }
+    th, td { text-align: right; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--faint); font-weight: 500; }
+    td.id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); word-break: break-all; }
+    td.num { font-variant-numeric: tabular-nums; }
+    td.saved-cell { color: var(--live); }
+
+    .note, .empty, .err { color: var(--muted); font-size: var(--fs-sm); }
+    .note { margin-top: var(--s4); }
+    .empty { padding: var(--s4) 0; }
+    .err { color: #ff8787; padding: var(--s4) 0; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="top">
+      <h1><span aria-hidden="true">🧭</span>&nbsp;Token savings <span class="badge">estimated</span></h1>
+      <a class="back" href="/">&larr; map</a>
+    </div>
+
+    <p class="sub">
+      These counts are <strong>estimates</strong> (characters &divide; 4), recorded locally by the
+      <code>compass context</code> pre-injection hook. The honest, measurable number is
+      <strong>de-dup savings</strong>: tokens Compass did <em>not</em> re-inject for files it had
+      already shown earlier in the same session. Nothing leaves your machine.
+    </p>
+
+    <section class="cards" id="cards" hidden>
+      <div class="card saved">
+        <div class="num" id="t-saved">&mdash;</div>
+        <div class="lbl">est. tokens saved by session de-dup</div>
+      </div>
+      <div class="card">
+        <div class="num" id="t-injected">&mdash;</div>
+        <div class="lbl">est. tokens injected</div>
+      </div>
+      <div class="card">
+        <div class="num" id="t-injections">&mdash;</div>
+        <div class="lbl">injections logged</div>
+      </div>
+    </section>
+
+    <table id="table" hidden>
+      <caption>Per session</caption>
+      <thead>
+        <tr><th>Session</th><th>Injections</th><th>Est. injected</th><th>Est. saved</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <p class="empty" id="empty" hidden>
+      No injections logged yet. Once <code>compass context --hook</code> runs in a session
+      (via the Claude Code <code>UserPromptSubmit</code> hook), savings show up here.
+    </p>
+    <p class="err" id="err" hidden></p>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+      var $ = function (id) { return document.getElementById(id); };
+      var fmt = function (n) { return (n || 0).toLocaleString(); };
+      function show(id) { var el = $(id); if (el) el.hidden = false; }
+
+      fetch("/api/session-tokens")
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          $("t-saved").textContent = fmt(d.total_saved_tokens);
+          $("t-injected").textContent = fmt(d.total_injected_tokens);
+          $("t-injections").textContent = fmt(d.total_injections);
+          show("cards");
+
+          var sessions = d.sessions || [];
+          if (!sessions.length) { show("empty"); return; }
+
+          var rows = $("rows");
+          sessions.forEach(function (s) {
+            var tr = document.createElement("tr");
+            // Build cells with textContent (never innerHTML) so a session id can't inject markup.
+            var cells = [
+              { cls: "id", text: s.id },
+              { cls: "num", text: fmt(s.injections) },
+              { cls: "num", text: fmt(s.injected_tokens) },
+              { cls: "num saved-cell", text: fmt(s.saved_tokens) }
+            ];
+            cells.forEach(function (c) {
+              var td = document.createElement("td");
+              td.className = c.cls;
+              td.textContent = c.text;
+              tr.appendChild(td);
+            });
+            rows.appendChild(tr);
+          });
+          show("table");
+        })
+        .catch(function (e) {
+          var el = $("err");
+          el.textContent = "Could not load token data: " + e;
+          el.hidden = false;
+        });
+    })();
+  </script>
+</body>
+</html>

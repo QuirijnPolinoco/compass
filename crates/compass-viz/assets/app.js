@@ -407,6 +407,8 @@
   cy.on("tap", "node", function (evt) { evt.target.toggleClass("show-label"); });
 
   // ---- boot -----------------------------------------------------------------------------
+  // The token-savings dashboard needs the live server; hide its link in offline snapshots.
+  if (snapshot) { var tl = $("tokens-link"); if (tl) tl.hidden = true; }
   sizeHullCanvas();
   loadGraph(true).then(function () { $("loading").hidden = true; connectLive(); });
 })();

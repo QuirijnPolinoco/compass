@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use compass_core::{ContextPack, ContextRequest, Graph, MapQuery};
+use serde::{Deserialize, Serialize};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -594,7 +595,7 @@ fn run_map(args: &[String]) -> ExitCode {
             }
         }
     } else {
-        let state = compass_viz::MapState::new(Arc::new(graph));
+        let state = compass_viz::MapState::new(Arc::new(graph), path.clone());
         let server = match compass_viz::bind(port) {
             Ok(server) => server,
             Err(e) => {
@@ -742,12 +743,52 @@ fn run_context(args: &[String]) -> ExitCode {
     // Session graph (ADR-0006 follow-up): within one editor session, don't re-inject files
     // already shown — they're still in the conversation. Keep only files new to this session,
     // then remember them. If nothing is new, inject nothing (don't spend tokens repeating).
+    //
+    // While we're here, record an honest token-savings estimate for the local dashboard
+    // (`compass map` → `/tokens`). Token counts are ESTIMATES (rendered chars / 4), never
+    // exact; the measurable story is `est_tokens_saved`: tokens NOT re-injected because the
+    // files were already shown this session.
     if let Some(sid) = session_id.filter(|_| hook) {
+        // Render the full selection first; the markdown it sheds after de-dup is what we did
+        // not re-inject for already-seen files. The shared header cancels in the difference.
+        let total_files = pack.files.len();
+        let full_len = render_context_markdown(&path, &pack).len();
+
         let mut seen = load_session_seen(&path, &sid);
         pack.files.retain(|f| !seen.contains(&f.path));
+        let files_injected = pack.files.len();
+        let files_deduped = total_files - files_injected;
+
         if pack.files.is_empty() {
+            // Everything we'd have shown is already in the session — inject nothing, but still
+            // log what de-dup saved (the whole selection's estimated tokens).
+            log_session_tokens(
+                &path,
+                &sid,
+                TokenEvent {
+                    at: unix_secs(),
+                    files_injected: 0,
+                    files_deduped,
+                    est_tokens_injected: 0,
+                    est_tokens_saved: (full_len / 4) as u64,
+                },
+            );
             return ExitCode::SUCCESS;
         }
+
+        let injected_len = render_context_markdown(&path, &pack).len();
+        log_session_tokens(
+            &path,
+            &sid,
+            TokenEvent {
+                at: unix_secs(),
+                files_injected,
+                files_deduped,
+                est_tokens_injected: (injected_len / 4) as u64,
+                est_tokens_saved: (full_len.saturating_sub(injected_len) / 4) as u64,
+            },
+        );
+
         for f in &pack.files {
             seen.push(f.path.clone());
         }
@@ -758,10 +799,15 @@ fn run_context(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Path of a session's "already-injected files" list under the repo's `.compass/sessions/`.
-fn session_seen_path(repo: &Path, session_id: &str) -> PathBuf {
-    // Session ids are host-generated (UUIDs); keep only filename-safe chars defensively.
-    let safe: String = session_id
+/// A repo's `.compass/sessions/` directory, where per-session state lives.
+fn sessions_dir(repo: &Path) -> PathBuf {
+    repo.join(".compass").join("sessions")
+}
+
+/// Filename-safe form of a host-generated session id (UUIDs); keep only safe chars defensively.
+/// The seen-list (`<id>.json`) and the token log (`<id>.tokens.json`) share this same key.
+fn safe_session_id(session_id: &str) -> String {
+    session_id
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -770,10 +816,12 @@ fn session_seen_path(repo: &Path, session_id: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect();
-    repo.join(".compass")
-        .join("sessions")
-        .join(format!("{safe}.json"))
+        .collect()
+}
+
+/// Path of a session's "already-injected files" list under the repo's `.compass/sessions/`.
+fn session_seen_path(repo: &Path, session_id: &str) -> PathBuf {
+    sessions_dir(repo).join(format!("{}.json", safe_session_id(session_id)))
 }
 
 /// Files already injected this session (most-recent last), or empty if none/unreadable.
@@ -794,6 +842,56 @@ fn save_session_seen(repo: &Path, session_id: &str, seen: &[String]) {
     if let Ok(json) = serde_json::to_string(&seen[start..]) {
         let _ = std::fs::write(path, json);
     }
+}
+
+/// One pre-injection event for the local token-savings dashboard. All token counts are
+/// ESTIMATES (rendered markdown length / 4), never exact — the dashboard labels them so. The
+/// honest, measurable number is `est_tokens_saved`: tokens NOT re-injected this session because
+/// the files were already shown.
+#[derive(Serialize, Deserialize)]
+struct TokenEvent {
+    /// Unix seconds when the event was recorded.
+    at: u64,
+    /// Files injected this prompt (after session de-dup).
+    files_injected: usize,
+    /// Files dropped because they were already injected earlier this session.
+    files_deduped: usize,
+    /// Estimated tokens injected (chars/4 of the injected markdown).
+    est_tokens_injected: u64,
+    /// Estimated tokens NOT re-injected thanks to de-dup (chars/4 of the dropped files).
+    est_tokens_saved: u64,
+}
+
+/// Path of a session's token-savings log (a `Vec<TokenEvent>`) under `.compass/sessions/`.
+fn token_log_path(repo: &Path, session_id: &str) -> PathBuf {
+    sessions_dir(repo).join(format!("{}.tokens.json", safe_session_id(session_id)))
+}
+
+/// Append a token event to the session's log, capped to the most recent 500 (best-effort).
+/// Like [`save_session_seen`], this must never block or fail the hook — IO/serialize errors are
+/// ignored, and a malformed existing log is simply overwritten.
+fn log_session_tokens(repo: &Path, session_id: &str, event: TokenEvent) {
+    let path = token_log_path(repo, session_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut events: Vec<TokenEvent> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    events.push(event);
+    let start = events.len().saturating_sub(500);
+    if let Ok(json) = serde_json::to_string(&events[start..]) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Current unix time in whole seconds (0 if the clock predates the epoch — never panics).
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Render a context pack as a compact markdown block suitable for prompt injection.

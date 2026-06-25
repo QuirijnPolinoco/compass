@@ -531,3 +531,71 @@ fn mcp_overview_over_stdio() {
         "tool errored:\n{stdout}"
     );
 }
+
+/// Drive the pre-injection hook (`compass context --hook`) with a `UserPromptSubmit` payload on
+/// stdin and confirm it records a per-session token-savings event with a positive (estimated)
+/// injected-token count — the data the local `/tokens` dashboard reads.
+#[test]
+fn context_hook_logs_token_event() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("context-hook-tokens");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc Alpha() {}\n").unwrap();
+    std::fs::write(dir.join("b.go"), "package m\n\nfunc Beta() {}\n").unwrap();
+
+    // Build the `.compass` cache the hook loads from (fast per-prompt injection).
+    let init = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("init")
+        .arg(&dir)
+        .output()
+        .expect("run compass init");
+    assert!(
+        init.status.success(),
+        "init stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    // Feed a session id + prompt the way Claude Code's UserPromptSubmit hook would.
+    let session_id = "sess-hook-1";
+    let payload = format!(r#"{{"session_id":"{session_id}","prompt":"explain Alpha and Beta"}}"#);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("context")
+        .arg("--hook")
+        .arg(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn compass context --hook");
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin.write_all(payload.as_bytes()).expect("write payload");
+    }
+    let output = child.wait_with_output().expect("wait for compass context");
+    assert!(
+        output.status.success(),
+        "context --hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The per-session token log exists and records a first-injection event with > 0 tokens.
+    let log_path = dir
+        .join(".compass/sessions")
+        .join(format!("{session_id}.tokens.json"));
+    let log = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("token log {} not written: {e}", log_path.display()));
+    let events: serde_json::Value = serde_json::from_str(&log).expect("token log is JSON");
+    let arr = events.as_array().expect("token log is an array");
+    assert!(!arr.is_empty(), "no token events logged:\n{log}");
+    let injected = arr[0]["est_tokens_injected"].as_u64().unwrap_or(0);
+    assert!(injected > 0, "expected est_tokens_injected > 0:\n{log}");
+    // Nothing has been shown yet, so the first injection de-dups nothing.
+    assert_eq!(
+        arr[0]["files_deduped"].as_u64(),
+        Some(0),
+        "first injection should drop nothing:\n{log}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
