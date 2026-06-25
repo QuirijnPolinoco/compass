@@ -599,3 +599,598 @@ fn context_hook_logs_token_event() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- `compass guard` (opt-in PreToolUse hub-edit confirmation hook) -------------------------
+
+/// Build a throwaway Go repo where `util/util.go` is imported by six leaf files (so it's a clear
+/// high-centrality hub) and `compass init` it, so a cached graph the guard can load exists.
+/// Returns the repo root.
+fn make_guard_repo(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("util")).unwrap();
+    std::fs::write(dir.join("go.mod"), "module example.com/guard\n\ngo 1.22\n").unwrap();
+    std::fs::write(
+        dir.join("util").join("util.go"),
+        "package util\n\nfunc Helper() string { return \"x\" }\n",
+    )
+    .unwrap();
+    // Six leaves, each importing the util package → util has import degree 6; each leaf has 1.
+    for (i, leaf) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+        let func = (b'A' + i as u8) as char;
+        std::fs::write(
+            dir.join(format!("{leaf}.go")),
+            format!(
+                "package main\n\nimport \"example.com/guard/util\"\n\nfunc {func}() string {{ return util.Helper() }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let init = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("init")
+        .arg(&dir)
+        .output()
+        .expect("run compass init");
+    assert!(
+        init.status.success(),
+        "init stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    dir
+}
+
+/// Build a throwaway Go repo where the top-level `main.go` imports six leaf packages but is imported
+/// by nobody (high OUT-degree, zero IN-degree — a pure aggregator/entrypoint) and `compass init` it.
+/// Returns the repo root. Used to prove the guard does NOT flag a zero-blast-radius file.
+fn make_aggregator_repo(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("go.mod"), "module example.com/agg\n\ngo 1.22\n").unwrap();
+    let mut imports = String::new();
+    let mut uses = String::new();
+    for i in 1..=6 {
+        std::fs::create_dir_all(dir.join(format!("lib{i}"))).unwrap();
+        std::fs::write(
+            dir.join(format!("lib{i}")).join("lib.go"),
+            format!("package lib{i}\n\nfunc F() string {{ return \"x\" }}\n"),
+        )
+        .unwrap();
+        imports.push_str(&format!("    \"example.com/agg/lib{i}\"\n"));
+        uses.push_str(&format!("    _ = lib{i}.F()\n"));
+    }
+    std::fs::write(
+        dir.join("main.go"),
+        format!("package main\n\nimport (\n{imports})\n\nfunc main() {{\n{uses}}}\n"),
+    )
+    .unwrap();
+
+    let init = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("init")
+        .arg(&dir)
+        .output()
+        .expect("run compass init");
+    assert!(
+        init.status.success(),
+        "init stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    dir
+}
+
+/// A Claude Code `PreToolUse` payload for `tool` targeting `file_path`, with an optional session
+/// id. `serde_json` handles path escaping (Windows backslashes) for us.
+fn pre_tool_use(tool: &str, file_path: &std::path::Path, session: Option<&str>) -> String {
+    serde_json::json!({
+        "session_id": session,
+        "hook_event_name": "PreToolUse",
+        "cwd": file_path.parent().map(|p| p.to_string_lossy().into_owned()),
+        "tool_name": tool,
+        "tool_input": { "file_path": file_path.to_string_lossy() },
+    })
+    .to_string()
+}
+
+/// Run `compass guard <dir>`, feed `stdin`, and return the process output. The two tuning env vars
+/// are cleared so the test is deterministic regardless of the developer's environment.
+fn run_guard_hook(dir: &std::path::Path, stdin: &str) -> std::process::Output {
+    run_guard_hook_env(dir, stdin, &[])
+}
+
+/// Like [`run_guard_hook`] but with explicit env overrides (e.g. `COMPASS_GUARD_BLOCK=1` for hard
+/// `deny`, or `COMPASS_GUARD_MIN_DEGREE` to tune the threshold). Both vars are first cleared, then
+/// the overrides applied, so a developer's environment can't perturb the result.
+fn run_guard_hook_env(
+    dir: &std::path::Path,
+    stdin: &str,
+    env: &[(&str, &str)],
+) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_compass"));
+    cmd.arg("guard")
+        .arg(dir)
+        .env_remove("COMPASS_GUARD_MIN_DEGREE")
+        .env_remove("COMPASS_GUARD_BLOCK");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn compass guard");
+    {
+        let mut si = child.stdin.take().expect("stdin");
+        si.write_all(stdin.as_bytes()).expect("write guard stdin");
+    }
+    child.wait_with_output().expect("wait for compass guard")
+}
+
+/// Run `compass guard` with NO path argument — the way the installed hook actually runs it. The
+/// guard must then resolve the repo root from the payload's `cwd` (searching upward for `.compass`).
+fn run_guard_hook_no_path(stdin: &str) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("guard")
+        .env_remove("COMPASS_GUARD_MIN_DEGREE")
+        .env_remove("COMPASS_GUARD_BLOCK")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn compass guard");
+    {
+        let mut si = child.stdin.take().expect("stdin");
+        si.write_all(stdin.as_bytes()).expect("write guard stdin");
+    }
+    child.wait_with_output().expect("wait for compass guard")
+}
+
+#[test]
+fn guard_asks_before_editing_a_hub_file() {
+    let dir = make_guard_repo("guard-hub");
+    let util = dir.join("util").join("util.go");
+    let out = run_guard_hook(&dir, &pre_tool_use("Edit", &util, None));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        out.status.success(),
+        "guard must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(r#""permissionDecision":"ask""#),
+        "editing the hub should ask:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("util/util.go"),
+        "the reason should name the file:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_allows_editing_a_leaf_file() {
+    let dir = make_guard_repo("guard-leaf");
+    // `a.go` only imports util (degree 1) — well below the high-centrality bar.
+    let leaf = dir.join("a.go");
+    let out = run_guard_hook(&dir, &pre_tool_use("Edit", &leaf, None));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "guard must exit 0");
+    assert!(
+        stdout.trim().is_empty(),
+        "a low-centrality edit must be allowed silently:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_allows_non_edit_tools() {
+    let dir = make_guard_repo("guard-nonedit");
+    let util = dir.join("util").join("util.go");
+    // A Read of the hub file is not a mutation → allowed silently.
+    let out = run_guard_hook(&dir, &pre_tool_use("Read", &util, None));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "guard must exit 0");
+    assert!(
+        stdout.trim().is_empty(),
+        "a non-mutating tool must be allowed silently:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_allows_on_garbage_and_empty_stdin() {
+    let dir = make_guard_repo("guard-garbage");
+    // Empty, non-JSON, and structurally-wrong-but-valid JSON must all fail open (no panic).
+    for stdin in ["", "not json at all {{{", "[1, 2, 3]"] {
+        let out = run_guard_hook(&dir, stdin);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "must exit 0 on input `{stdin}`");
+        assert!(
+            stdout.trim().is_empty(),
+            "must allow silently on input `{stdin}`:\n{stdout}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_allows_when_there_is_no_cache() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guard-nocache");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.go");
+    std::fs::write(&file, "package main\n\nfunc A() {}\n").unwrap();
+    // No `compass init`, so there is no `.compass` cache to load.
+
+    let out = run_guard_hook(&dir, &pre_tool_use("Edit", &file, None));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "guard must exit 0");
+    assert!(
+        stdout.trim().is_empty(),
+        "no cache → allow silently:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_asks_every_time_in_default_mode() {
+    // Default (ask) mode must NOT silently suppress a repeat edit of the same hub in one session:
+    // the hook can't see how the user answered the first prompt, so suppressing would let an edit
+    // through right after the user DECLINED. It should ask every time (the host's own prompt offers
+    // "don't ask again" to quiet repeats).
+    let dir = make_guard_repo("guard-ask-repeat");
+    let util = dir.join("util").join("util.go");
+    let payload = pre_tool_use("Edit", &util, Some("sess-ask-1"));
+
+    for nth in ["first", "second"] {
+        let out = run_guard_hook(&dir, &payload);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success());
+        assert!(
+            stdout.contains(r#""permissionDecision":"ask""#),
+            "the {nth} edit of a hub should ask (no silent suppression):\n{stdout}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_block_mode_denies_once_then_allows_within_session() {
+    // In opt-in block mode the first edit of a hub is DENIED, but a given hub is denied at most once
+    // per session and allowed thereafter — so a hard block can never permanently wedge you off a
+    // file. (This is the fail-safe the de-dup is reserved for.)
+    let dir = make_guard_repo("guard-block");
+    let util = dir.join("util").join("util.go");
+    let payload = pre_tool_use("Edit", &util, Some("sess-block-1"));
+
+    let first = run_guard_hook_env(&dir, &payload, &[("COMPASS_GUARD_BLOCK", "1")]);
+    let first_out = String::from_utf8_lossy(&first.stdout);
+    assert!(
+        first.status.success(),
+        "guard must exit 0 even when denying"
+    );
+    assert!(
+        first_out.contains(r#""permissionDecision":"deny""#),
+        "block mode should deny the first hub edit:\n{first_out}"
+    );
+
+    let second = run_guard_hook_env(&dir, &payload, &[("COMPASS_GUARD_BLOCK", "1")]);
+    let second_out = String::from_utf8_lossy(&second.stdout);
+    assert!(second.status.success());
+    assert!(
+        second_out.trim().is_empty(),
+        "a hub denied once this session must then be allowed (never wedged):\n{second_out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_allows_a_pure_aggregator_with_zero_dependents() {
+    // Regression: a top-level aggregator (high OUT-degree, zero IN-degree) — e.g. a main.go that
+    // imports many packages but is imported by nobody — has zero blast radius and must be allowed
+    // silently. The old in+out metric flagged it with a self-contradictory "0 file(s) import it
+    // (import degree N)" reason; the in-degree metric must not.
+    let dir = make_aggregator_repo("guard-aggregator");
+    let main = dir.join("main.go");
+
+    // Sanity: the fixture really is a zero-dependent aggregator.
+    let deps = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("deps")
+        .arg(&dir)
+        .arg("main.go")
+        .output()
+        .expect("run compass deps");
+    let deps_out = String::from_utf8_lossy(&deps.stdout);
+    assert!(
+        deps_out.contains("depended on by (0)"),
+        "fixture should have zero dependents:\n{deps_out}"
+    );
+
+    let out = run_guard_hook(&dir, &pre_tool_use("Edit", &main, None));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "guard must exit 0");
+    assert!(
+        stdout.trim().is_empty(),
+        "an aggregator with zero dependents must be allowed silently:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_threshold_override_can_silence_a_hub() {
+    // The documented COMPASS_GUARD_MIN_DEGREE override must actually reach the hook: a high enough
+    // threshold silences a file the default would flag (util's in-degree 6 < 100).
+    let dir = make_guard_repo("guard-threshold");
+    let util = dir.join("util").join("util.go");
+    let payload = pre_tool_use("Edit", &util, None);
+
+    let asked = run_guard_hook(&dir, &payload);
+    assert!(
+        String::from_utf8_lossy(&asked.stdout).contains(r#""permissionDecision":"ask""#),
+        "the default threshold should flag the hub"
+    );
+
+    let silenced = run_guard_hook_env(&dir, &payload, &[("COMPASS_GUARD_MIN_DEGREE", "100")]);
+    let silenced_out = String::from_utf8_lossy(&silenced.stdout);
+    assert!(silenced.status.success());
+    assert!(
+        silenced_out.trim().is_empty(),
+        "a high COMPASS_GUARD_MIN_DEGREE must silence the hub:\n{silenced_out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_covers_multiedit_and_notebookedit_path_shapes() {
+    // The path-extraction branches for `edits[].file_path` (MultiEdit) and `notebook_path`
+    // (NotebookEdit) must both map to the hub and ask.
+    let dir = make_guard_repo("guard-toolshapes");
+    let util = dir.join("util").join("util.go");
+    let util_s = util.to_string_lossy().replace('\\', "/");
+
+    let multiedit = format!(
+        r#"{{"tool_name":"MultiEdit","tool_input":{{"edits":[{{"file_path":"{util_s}"}}]}}}}"#
+    );
+    let me = run_guard_hook(&dir, &multiedit);
+    assert!(
+        String::from_utf8_lossy(&me.stdout).contains(r#""permissionDecision":"ask""#),
+        "MultiEdit via edits[].file_path should ask:\n{}",
+        String::from_utf8_lossy(&me.stdout)
+    );
+
+    let notebook =
+        format!(r#"{{"tool_name":"NotebookEdit","tool_input":{{"notebook_path":"{util_s}"}}}}"#);
+    let nb = run_guard_hook(&dir, &notebook);
+    assert!(
+        String::from_utf8_lossy(&nb.stdout).contains(r#""permissionDecision":"ask""#),
+        "NotebookEdit via notebook_path should ask:\n{}",
+        String::from_utf8_lossy(&nb.stdout)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_maps_a_relative_target_path() {
+    // A relative `file_path` is joined onto the repo root and must still map to the hub.
+    let dir = make_guard_repo("guard-relpath");
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"util/util.go"}}"#;
+    let out = run_guard_hook(&dir, payload);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    assert!(
+        stdout.contains(r#""permissionDecision":"ask""#),
+        "a relative path to the hub should ask:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn guard_allows_a_sibling_dir_name_prefix_collision() {
+    // The repo-boundary check must fall on a path separator: a sibling directory that merely shares
+    // a name prefix (`guard-sibling` vs `guard-sibling-other`) is NOT inside the repo → allow.
+    let dir = make_guard_repo("guard-sibling");
+    let sibling = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guard-sibling-other");
+    let _ = std::fs::remove_dir_all(&sibling);
+    std::fs::create_dir_all(&sibling).unwrap();
+    let outside = sibling.join("util.go");
+    std::fs::write(&outside, "package main\n\nfunc X() {}\n").unwrap();
+
+    let out = run_guard_hook(&dir, &pre_tool_use("Edit", &outside, None));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    assert!(
+        stdout.trim().is_empty(),
+        "a sibling-dir prefix collision must be treated as outside the repo:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&sibling);
+}
+
+#[test]
+fn guard_resolves_repo_root_from_payload_cwd() {
+    // Launched WITHOUT a path argument (as the installed hook is) and from a SUBDIRECTORY of the
+    // repo, the guard must resolve the root by searching upward for `.compass` and still flag the
+    // hub — rather than silently no-opping for the whole session.
+    let dir = make_guard_repo("guard-cwd-discovery");
+    let util = dir.join("util").join("util.go");
+    // `pre_tool_use` sets `cwd` to the file's parent dir (`<repo>/util`), a subdirectory.
+    let payload = pre_tool_use("Edit", &util, None);
+    let out = run_guard_hook_no_path(&payload);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    assert!(
+        stdout.contains(r#""permissionDecision":"ask""#),
+        "guard should find the repo root from the payload cwd and ask:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_guard_adds_pretooluse_hook_and_all_does_not() {
+    // `install --guard` adds ONLY the opt-in PreToolUse guard hook.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-guard-hook");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("install")
+        .arg("--guard")
+        .arg(&dir)
+        .output()
+        .expect("run compass install --guard");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let settings =
+        std::fs::read_to_string(dir.join(".claude/settings.json")).expect("settings.json written");
+    assert!(
+        settings.contains("PreToolUse"),
+        "guard hook missing:\n{settings}"
+    );
+    assert!(
+        settings.contains("guard"),
+        "guard command missing:\n{settings}"
+    );
+    // Opt-in means ONLY the guard — `--guard` must not also wire the context hook.
+    assert!(
+        !settings.contains("UserPromptSubmit"),
+        "install --guard should add only the guard hook:\n{settings}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Plain `install --all` must NOT add the guard hook.
+    let dir2 = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-all-plain");
+    let _ = std::fs::remove_dir_all(&dir2);
+    std::fs::create_dir_all(&dir2).unwrap();
+    std::fs::write(dir2.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    let out2 = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("install")
+        .arg("--all")
+        .arg(&dir2)
+        .output()
+        .expect("run compass install --all");
+    assert!(
+        out2.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let settings2 =
+        std::fs::read_to_string(dir2.join(".claude/settings.json")).expect("settings.json written");
+    assert!(
+        settings2.contains("UserPromptSubmit"),
+        "install --all should add the context hook:\n{settings2}"
+    );
+    assert!(
+        !settings2.contains("PreToolUse"),
+        "install --all must NOT add the guard hook:\n{settings2}"
+    );
+    assert!(
+        !settings2.contains("guard"),
+        "install --all must NOT mention the guard:\n{settings2}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn install_guard_is_idempotent_and_preserves_existing_hooks() {
+    // Running `install --guard` twice adds the PreToolUse guard hook exactly once, and merging into
+    // a settings.json that already has an unrelated hook + key preserves them.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-guard-idempotent");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".claude")).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+    // Pre-existing settings: a custom model + an unrelated UserPromptSubmit hook.
+    std::fs::write(
+        dir.join(".claude").join("settings.json"),
+        r#"{"model":"opus","hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+    )
+    .unwrap();
+
+    let install = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+            .arg("install")
+            .arg("--guard")
+            .arg(&dir)
+            .output()
+            .expect("run compass install --guard");
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    install();
+    install();
+
+    let settings =
+        std::fs::read_to_string(dir.join(".claude/settings.json")).expect("settings.json");
+    let v: serde_json::Value = serde_json::from_str(&settings).expect("settings is JSON");
+    let pre = v["hooks"]["PreToolUse"]
+        .as_array()
+        .expect("PreToolUse array");
+    assert_eq!(
+        pre.len(),
+        1,
+        "guard hook must not be duplicated:\n{settings}"
+    );
+    // Pre-existing settings preserved.
+    assert_eq!(
+        v["model"].as_str(),
+        Some("opus"),
+        "model key dropped:\n{settings}"
+    );
+    assert!(
+        settings.contains("echo hi"),
+        "pre-existing UserPromptSubmit hook dropped:\n{settings}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_guard_without_a_map_warns_to_run_init() {
+    // `install --guard` only writes the hook; with no `.compass` map the guard would silently do
+    // nothing, so the command must tell the user to run `compass init` (no false sense of security).
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-guard-nomap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("install")
+        .arg("--guard")
+        .arg(&dir)
+        .output()
+        .expect("run compass install --guard");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("compass init"),
+        "install --guard with no map should point at `compass init`:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -41,6 +41,13 @@ pub fn save(repo_root: &Path, graph: &Graph) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether a graph cache file is present at `<repo_root>/.compass/graph.json`. A cheap existence
+/// check (no read/parse) — callers that need the graph itself should use [`load`]. Used by
+/// `compass install --guard` to warn when the guard hook would be wired up against no map.
+pub fn exists(repo_root: &Path) -> bool {
+    repo_root.join(CACHE_DIR).join(CACHE_FILE).exists()
+}
+
 /// Load the cached graph, or `None` if absent, unreadable, or a stale format version
 /// (caller should then reindex). Transient indices are rebuilt before returning.
 pub fn load(repo_root: &Path) -> Option<Graph> {
