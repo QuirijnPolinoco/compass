@@ -392,6 +392,74 @@ fn louvain_one_level(graph: &[HashMap<usize, f64>]) -> Vec<usize> {
         .collect()
 }
 
+/// Tarjan's strongly-connected-components over a directed graph given as successor lists indexed by
+/// node. **Iterative** (an explicit work stack), so a deep import chain can't overflow the call
+/// stack on a large repo. Returns one component (a `Vec` of node indices) per SCC. Deterministic:
+/// neighbors are visited in input order, so both the components and their members are stable.
+///
+/// Used by [`Graph::import_cycles`] — an SCC of ≥ 2 nodes is exactly a set of files that import
+/// their way back to one another, i.e. a sound circular-dependency cluster.
+fn tarjan_sccs(adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let n = adj.len();
+    const UNVISITED: usize = usize::MAX;
+
+    let mut index = vec![UNVISITED; n]; // DFS discovery order, UNVISITED until first seen
+    let mut lowlink = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut scc_stack: Vec<usize> = Vec::new();
+    let mut sccs: Vec<Vec<usize>> = Vec::new();
+    let mut next_index = 0usize;
+
+    // Explicit DFS frames: (node, index of its next neighbor to explore).
+    let mut work: Vec<(usize, usize)> = Vec::new();
+
+    for start in 0..n {
+        if index[start] != UNVISITED {
+            continue;
+        }
+        work.push((start, 0));
+        while let Some(&(v, ni)) = work.last() {
+            if ni == 0 {
+                // First visit to `v`: assign its index and put it on the SCC stack.
+                index[v] = next_index;
+                lowlink[v] = next_index;
+                next_index += 1;
+                scc_stack.push(v);
+                on_stack[v] = true;
+            }
+            if ni < adj[v].len() {
+                let w = adj[v][ni];
+                work.last_mut().unwrap().1 += 1; // advance v's cursor before descending
+                if index[w] == UNVISITED {
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    lowlink[v] = lowlink[v].min(index[w]);
+                }
+            } else {
+                // `v` is fully explored. If it roots an SCC, pop the component off the stack.
+                if lowlink[v] == index[v] {
+                    let mut comp = Vec::new();
+                    loop {
+                        let w = scc_stack.pop().expect("scc stack non-empty at a root");
+                        on_stack[w] = false;
+                        comp.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    sccs.push(comp);
+                }
+                work.pop();
+                // Propagate v's lowlink up to its DFS parent (the recursive-return step).
+                if let Some(&(parent, _)) = work.last() {
+                    lowlink[parent] = lowlink[parent].min(lowlink[v]);
+                }
+            }
+        }
+    }
+    sccs
+}
+
 /// Read-only query port the MCP and viz layers depend on, so they never touch the engine
 /// (ADR-0002 / architecture §4). The concrete graph implements it.
 pub trait MapQuery {
@@ -426,6 +494,20 @@ pub trait MapQuery {
     /// The files in one structural community (`id` from [`graph_view`](Self::graph_view) /
     /// [`detect_communities`]). `None` if no file belongs to that community.
     fn community(&self, id: u32) -> Option<CommunityView>;
+    /// Circular import dependencies in the **directed** import graph: every strongly-connected set
+    /// of ≥ 2 files (plus any file that imports itself). Provable from the import graph when every
+    /// edge in the cycle is path-exact ([`EdgeConfidence::Resolved`]); a cycle that rests on a
+    /// convention-based ([`EdgeConfidence::Heuristic`]) edge is flagged ([`ImportCycle::heuristic`])
+    /// as needing verification rather than asserted (every Java import edge, for instance, is
+    /// heuristic). Each carries a concrete cycle [path](ImportCycle::path) so a reader can see which
+    /// edge to cut. Sorted by size desc then first path for determinism.
+    fn import_cycles(&self) -> Vec<ImportCycle>;
+    /// Files with **no resolved import edges** in or out — neither importing another mapped file nor
+    /// imported by one, sorted. Honest caveat: this is a *smell*, not a defect. Such files are
+    /// frequently legitimate — entrypoints, config, generated code, or standalone scripts — so the
+    /// audit reports them for review rather than asserting a problem. A file whose only import is
+    /// broken is excluded: it is already surfaced as a Problem, not disconnected.
+    fn isolated_files(&self) -> Vec<String>;
 }
 
 /// A high-level summary of the map (FR-3/B1, the `overview` MCP tool).
@@ -469,6 +551,30 @@ pub struct FileDependencies {
 pub struct BrokenImport {
     pub file: String,
     pub message: String,
+}
+
+/// A circular import dependency: a set of files that each (transitively) import their way back to
+/// themselves, so none can be understood — or compiled, in languages that forbid it — in isolation.
+///
+/// This is a **sound** defect, not a guess: every member is reachable from every other along
+/// directed import edges (a strongly-connected component of the import graph). A `size`-1 cycle is a
+/// single file that imports itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportCycle {
+    /// Repo-relative paths of the files in the cycle, sorted for deterministic output.
+    pub files: Vec<String>,
+    /// One concrete cycle through the files, in import order: each element imports the next, and the
+    /// last imports the first. (For a self-import it is the single file.) Surfaces *how* the cycle
+    /// closes — which edge to cut — instead of only the unordered member set. Deterministic: starts
+    /// at the lexicographically-first member, ties broken by path.
+    pub path: Vec<String>,
+    /// Number of files in the cycle (≥ 2 for a mutual-import cluster; 1 only for a self-import).
+    pub size: usize,
+    /// `true` if any import edge *inside* the cycle was resolved by a language convention
+    /// ([`EdgeConfidence::Heuristic`]) rather than path-exactly — so the cycle rests on a guess and
+    /// is not strictly provable, and should be verified. `false` means every edge in the cycle is
+    /// path-exact and the cycle is provable from the import graph.
+    pub heuristic: bool,
 }
 
 /// What a graph node represents in the visual map (ADR-0005).
@@ -1001,6 +1107,97 @@ impl MapQuery for Graph {
             hubs,
         })
     }
+
+    fn import_cycles(&self) -> Vec<ImportCycle> {
+        let n = self.files.len();
+
+        // Directed successor lists: importer (`from`) → imported (`to`). Self-loops are tracked
+        // separately rather than added to `adj`, so a file that imports itself is reported as a
+        // 1-file cycle without polluting the SCC search. (The self-loop branch is defensive: no
+        // shipped extractor currently emits a file→itself import.)
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut self_loop = vec![false; n];
+        for &(a, b, _) in &self.imports {
+            let (ai, bi) = (a.0 as usize, b.0 as usize);
+            if ai == bi {
+                self_loop[ai] = true;
+            } else {
+                adj[ai].push(bi);
+            }
+        }
+
+        let mut cycles: Vec<ImportCycle> = tarjan_sccs(&adj)
+            .into_iter()
+            .filter_map(|scc| {
+                // A strongly-connected set of ≥ 2 files is a genuine circular dependency. A lone
+                // file is a cycle only when it imports itself.
+                let is_cycle = scc.len() >= 2 || (scc.len() == 1 && self_loop[scc[0]]);
+                if !is_cycle {
+                    return None;
+                }
+                let members: HashSet<usize> = scc.iter().copied().collect();
+
+                let mut files: Vec<String> = scc
+                    .iter()
+                    .filter_map(|&i| {
+                        self.file_path(FileId(i as u32))
+                            .map(|p| p.to_string_lossy().into_owned())
+                    })
+                    .collect();
+                files.sort();
+
+                // A concrete, ordered cycle through the members — which edge to cut.
+                let path = self.cycle_path(&members, &adj);
+
+                // Provability: a cycle that rests on any convention-based (Heuristic) import edge
+                // between its members is not strictly provable — flag it for verification. (Every
+                // Java import edge, and some C# ones, are heuristic.)
+                let heuristic = self.imports.iter().any(|&(a, b, c)| {
+                    c == EdgeConfidence::Heuristic
+                        && members.contains(&(a.0 as usize))
+                        && members.contains(&(b.0 as usize))
+                });
+
+                Some(ImportCycle {
+                    size: files.len(),
+                    files,
+                    path,
+                    heuristic,
+                })
+            })
+            .collect();
+
+        // Largest cluster first, then by first member path — stable across runs.
+        cycles.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.files.cmp(&b.files)));
+        cycles
+    }
+
+    fn isolated_files(&self) -> Vec<String> {
+        // A file is connected if any import edge (in either direction) touches it — including a
+        // self-import, which is therefore NOT isolated.
+        let mut touched = vec![false; self.files.len()];
+        for &(a, b, _) in &self.imports {
+            touched[a.0 as usize] = true;
+            touched[b.0 as usize] = true;
+        }
+        // A file whose import is broken carries an UnresolvedImport diagnostic and is already
+        // reported as a Problem; it isn't disconnected (its import just didn't resolve), so exclude
+        // it from the isolated-files smell rather than double-listing it.
+        for d in &self.diagnostics {
+            if d.kind == DiagnosticKind::UnresolvedImport {
+                touched[d.file.0 as usize] = true;
+            }
+        }
+        let mut files: Vec<String> = (0..self.files.len())
+            .filter(|&i| !touched[i])
+            .filter_map(|i| {
+                self.file_path(FileId(i as u32))
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+            .collect();
+        files.sort();
+        files
+    }
 }
 
 impl Graph {
@@ -1056,6 +1253,72 @@ impl Graph {
             *deg.entry(b).or_insert(0) += 1;
         }
         deg
+    }
+
+    /// One concrete cycle through `members` (a strongly-connected set), as ordered repo-relative
+    /// paths where each imports the next and the last imports the first. Deterministic regardless of
+    /// file/edge insertion order: it starts at the member whose path sorts first and visits
+    /// successors in path order (BFS for the shortest such cycle). A lone self-importing member
+    /// yields just that file. `adj` is the directed importer→imported successor list (self-loops
+    /// excluded, as in [`import_cycles`](MapQuery::import_cycles)).
+    fn cycle_path(&self, members: &HashSet<usize>, adj: &[Vec<usize>]) -> Vec<String> {
+        let path_of = |i: usize| -> String {
+            self.file_path(FileId(i as u32))
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let Some(start) = members.iter().copied().min_by_key(|&i| path_of(i)) else {
+            return Vec::new();
+        };
+        if members.len() == 1 {
+            return vec![path_of(start)];
+        }
+
+        // BFS from `start` for the shortest path that returns to it, restricted to members and with
+        // successors visited in path order so the cycle chosen is stable.
+        let mut prev: HashMap<usize, usize> = HashMap::new();
+        let mut visited: HashSet<usize> = HashSet::from([start]);
+        let mut queue: VecDeque<usize> = VecDeque::from([start]);
+        let mut closing: Option<usize> = None;
+        'bfs: while let Some(u) = queue.pop_front() {
+            let mut succ: Vec<usize> = adj[u]
+                .iter()
+                .copied()
+                .filter(|v| members.contains(v))
+                .collect();
+            succ.sort_by_key(|&v| path_of(v));
+            succ.dedup();
+            for v in succ {
+                if v == start {
+                    closing = Some(u);
+                    break 'bfs;
+                }
+                if visited.insert(v) {
+                    prev.insert(v, u);
+                    queue.push_back(v);
+                }
+            }
+        }
+
+        let Some(end) = closing else {
+            // Defensive: a real SCC of ≥ 2 always closes; fall back to the sorted members.
+            let mut files: Vec<String> = members.iter().copied().map(path_of).collect();
+            files.sort();
+            return files;
+        };
+        let mut chain = vec![end];
+        let mut cur = end;
+        while cur != start {
+            match prev.get(&cur) {
+                Some(&p) => {
+                    chain.push(p);
+                    cur = p;
+                }
+                None => break,
+            }
+        }
+        chain.reverse();
+        chain.into_iter().map(path_of).collect()
     }
 
     /// The `max` most import-connected files (degree desc, id as tiebreak).
@@ -1582,5 +1845,194 @@ mod tests {
             .find(|&id| g.community(id).is_none())
             .expect("some id is unused");
         assert!(g.community(unknown).is_none());
+    }
+
+    /// Build a graph from repo-relative file paths and directed `(from, to)` import edges (by path),
+    /// for the cycle/isolation tests. All edges are `Resolved`.
+    fn graph_with_edges(paths: &[&str], edges: &[(&str, &str)]) -> Graph {
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        for p in paths {
+            g.add_file(PathBuf::from(p), rs.clone(), 0);
+        }
+        for (from, to) in edges {
+            let a = g.file_id(Path::new(from)).unwrap();
+            let b = g.file_id(Path::new(to)).unwrap();
+            g.add_import(a, b, EdgeConfidence::Resolved);
+        }
+        g
+    }
+
+    #[test]
+    fn import_cycles_finds_sccs_and_ignores_acyclic_chains() {
+        // A 2-cycle (a↔b), a 3-cycle (c→d→e→c), and an acyclic chain (f→g→h) that is NOT a cycle.
+        let g = graph_with_edges(
+            &[
+                "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+            ],
+            &[
+                ("a.rs", "b.rs"),
+                ("b.rs", "a.rs"),
+                ("c.rs", "d.rs"),
+                ("d.rs", "e.rs"),
+                ("e.rs", "c.rs"),
+                ("f.rs", "g.rs"),
+                ("g.rs", "h.rs"),
+            ],
+        );
+        let cycles = g.import_cycles();
+
+        // Exactly the two SCCs — the acyclic chain contributes nothing.
+        assert_eq!(cycles.len(), 2, "only the 2-cycle and 3-cycle are cycles");
+        // Sorted by size desc: the 3-cycle first, then the 2-cycle, each with sorted members.
+        assert_eq!(cycles[0].size, 3);
+        assert_eq!(cycles[0].files, vec!["c.rs", "d.rs", "e.rs"]);
+        assert_eq!(cycles[1].size, 2);
+        assert_eq!(cycles[1].files, vec!["a.rs", "b.rs"]);
+        // No chain file is ever reported as part of a cycle.
+        for c in &cycles {
+            assert!(!c
+                .files
+                .iter()
+                .any(|f| matches!(f.as_str(), "f.rs" | "g.rs" | "h.rs")));
+        }
+
+        // Determinism is only meaningful across *different* insertion orders: build the same
+        // logical graph with files and edges added in a shuffled order and assert identical output
+        // (size, members, AND the concrete cycle path).
+        let project = |g: &Graph| -> Vec<(usize, Vec<String>, Vec<String>)> {
+            g.import_cycles()
+                .into_iter()
+                .map(|c| (c.size, c.files, c.path))
+                .collect()
+        };
+        let shuffled = graph_with_edges(
+            &[
+                "h.rs", "c.rs", "a.rs", "e.rs", "g.rs", "b.rs", "d.rs", "f.rs",
+            ],
+            &[
+                ("e.rs", "c.rs"),
+                ("g.rs", "h.rs"),
+                ("b.rs", "a.rs"),
+                ("c.rs", "d.rs"),
+                ("a.rs", "b.rs"),
+                ("f.rs", "g.rs"),
+                ("d.rs", "e.rs"),
+            ],
+        );
+        assert_eq!(project(&g), project(&shuffled));
+    }
+
+    #[test]
+    fn import_cycles_and_isolated_are_empty_for_an_empty_graph() {
+        // A 0-file repo must not panic and reports nothing — the FOCUS empty-repo case.
+        let g = Graph::new();
+        assert!(g.import_cycles().is_empty());
+        assert!(g.isolated_files().is_empty());
+    }
+
+    #[test]
+    fn import_cycles_reports_a_concrete_ordered_path() {
+        // The 3-cycle c→d→e→c renders a real path starting at the lexicographically-first member
+        // (c) and closing back to it — not just an unordered member set.
+        let g = graph_with_edges(
+            &["c.rs", "d.rs", "e.rs"],
+            &[("c.rs", "d.rs"), ("d.rs", "e.rs"), ("e.rs", "c.rs")],
+        );
+        let cycles = g.import_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].path, vec!["c.rs", "d.rs", "e.rs"]);
+        // All edges are path-exact, so the cycle is strictly provable.
+        assert!(!cycles[0].heuristic);
+    }
+
+    #[test]
+    fn import_cycles_flags_a_cycle_resting_on_a_heuristic_edge() {
+        // a→b is path-exact but b→a is a convention-based guess, so the cycle is NOT strictly
+        // provable and must be flagged for verification.
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        let a = g.add_file(PathBuf::from("a.rs"), rs.clone(), 0);
+        let b = g.add_file(PathBuf::from("b.rs"), rs.clone(), 0);
+        g.add_import(a, b, EdgeConfidence::Resolved);
+        g.add_import(b, a, EdgeConfidence::Heuristic);
+        let cycles = g.import_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert!(
+            cycles[0].heuristic,
+            "a cycle with a heuristic edge is not strictly provable"
+        );
+    }
+
+    #[test]
+    fn a_file_importing_into_a_cycle_is_not_part_of_it() {
+        // p.rs imports a.rs (which is in the a↔b 2-cycle) but nothing imports p.rs back — it is a
+        // pendant into the cycle and must NEVER appear in any reported cycle's members or path.
+        let g = graph_with_edges(
+            &["a.rs", "b.rs", "p.rs"],
+            &[("a.rs", "b.rs"), ("b.rs", "a.rs"), ("p.rs", "a.rs")],
+        );
+        let cycles = g.import_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].files, vec!["a.rs", "b.rs"]);
+        for c in &cycles {
+            assert!(!c.files.contains(&"p.rs".to_string()));
+            assert!(!c.path.contains(&"p.rs".to_string()));
+        }
+    }
+
+    #[test]
+    fn isolated_files_excludes_a_file_with_a_broken_import() {
+        // A file whose only import is broken has an UnresolvedImport diagnostic; it is reported as a
+        // Problem, so it must NOT also be listed as an "isolated" smell. Only the truly-disconnected
+        // file (no edges, no broken import) is isolated.
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        let broken = g.add_file(PathBuf::from("broken.rs"), rs.clone(), 0);
+        let _lonely = g.add_file(PathBuf::from("lonely.rs"), rs.clone(), 0);
+        g.add_diagnostic(Diagnostic {
+            kind: DiagnosticKind::UnresolvedImport,
+            file: broken,
+            message: "unresolved import `x`".into(),
+        });
+        assert_eq!(g.isolated_files(), vec!["lonely.rs"]);
+    }
+
+    #[test]
+    fn import_cycles_reports_a_self_loop() {
+        // A file that imports itself is a 1-file cycle; a normal acyclic neighbor is not.
+        let g = graph_with_edges(
+            &["loop.rs", "leaf.rs"],
+            &[("loop.rs", "loop.rs"), ("leaf.rs", "loop.rs")],
+        );
+        let cycles = g.import_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].size, 1);
+        assert_eq!(cycles[0].files, vec!["loop.rs"]);
+    }
+
+    #[test]
+    fn import_cycles_empty_for_an_acyclic_graph() {
+        // A pure DAG (a diamond) has no strongly-connected set of ≥ 2 — no false cycles.
+        let g = graph_with_edges(
+            &["top.rs", "left.rs", "right.rs", "bottom.rs"],
+            &[
+                ("top.rs", "left.rs"),
+                ("top.rs", "right.rs"),
+                ("left.rs", "bottom.rs"),
+                ("right.rs", "bottom.rs"),
+            ],
+        );
+        assert!(g.import_cycles().is_empty());
+    }
+
+    #[test]
+    fn isolated_files_returns_only_the_disconnected_files() {
+        // `a→b` connects a and b; `lonely.rs` has no edges; a self-importing file is NOT isolated.
+        let g = graph_with_edges(
+            &["a.rs", "b.rs", "lonely.rs", "selfish.rs"],
+            &[("a.rs", "b.rs"), ("selfish.rs", "selfish.rs")],
+        );
+        assert_eq!(g.isolated_files(), vec!["lonely.rs"]);
     }
 }

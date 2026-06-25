@@ -90,6 +90,30 @@ impl MapServer {
     }
 
     #[tool(
+        description = "Circular import dependencies: every set of files that import their way back \
+                       to one another (a strongly-connected component), plus any file that imports \
+                       itself. Each reports the member files, a concrete cycle path (which edge to \
+                       cut), its size, and whether it rests on a convention-based (heuristic) import \
+                       edge that needs verification. Empty array if the repository is acyclic."
+    )]
+    async fn import_cycles(&self) -> String {
+        serde_json::to_string_pretty(&self.query.import_cycles())
+            .unwrap_or_else(|e| format!("{{\"error\":\"failed to serialize import_cycles: {e}\"}}"))
+    }
+
+    #[tool(
+        description = "Files with no resolved import edges in or out — neither importing another \
+                       mapped file nor imported by one. A smell, not a defect: often legitimate \
+                       entrypoints, config, generated code, or standalone scripts. A file whose only \
+                       import is broken is excluded (it is reported by broken_imports instead)."
+    )]
+    async fn isolated_files(&self) -> String {
+        serde_json::to_string_pretty(&self.query.isolated_files()).unwrap_or_else(|e| {
+            format!("{{\"error\":\"failed to serialize isolated_files: {e}\"}}")
+        })
+    }
+
+    #[tool(
         description = "The neighborhood around a file: every file within `depth` import-hops \
                        (its dependencies and dependents) plus the import edges among them. Fetch \
                        this to load just the relevant slice of the repo instead of grepping or \

@@ -460,6 +460,273 @@ fn broken_imports_are_reported() {
 }
 
 #[test]
+fn audit_reports_a_circular_import_and_strict_fails() {
+    // Two TypeScript files that import each other form a genuine 2-cycle (a→b and b→a). The audit
+    // must surface it under "Problems"; by default it still exits 0 (informational), but `--strict`
+    // must exit non-zero so CI can gate on real defects.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("audit-cycle");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src").join("a.ts"),
+        "import { b } from \"./b\";\nexport function a(): void { b(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src").join("b.ts"),
+        "import { a } from \"./a\";\nexport function b(): void { a(); }\n",
+    )
+    .unwrap();
+
+    // Default run: reports the cycle, exits 0 (smells/problems are informational by default).
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(&dir)
+        .output()
+        .expect("run compass audit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "default audit must exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Circular imports ("),
+        "the cycle should be listed under Problems:\n{stdout}"
+    );
+    assert!(stdout.contains("src/a.ts"), "stdout:\n{stdout}");
+    assert!(stdout.contains("src/b.ts"), "stdout:\n{stdout}");
+    // The cycle is rendered as a concrete, ordered path (not just an unordered member set), so a
+    // reader can see how it closes and which edge to cut.
+    assert!(
+        stdout.contains("cycle of 2 files"),
+        "the cycle size should be named:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("→"),
+        "the cycle path should be rendered with arrows:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Summary: 1 problem"),
+        "summary should count the cycle:\n{stdout}"
+    );
+
+    // `--strict`: a real problem (the cycle) must make it exit non-zero for CI.
+    let strict = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(&dir)
+        .arg("--strict")
+        .output()
+        .expect("run compass audit --strict");
+    assert!(
+        !strict.status.success(),
+        "--strict must exit non-zero when there are real problems:\n{}",
+        String::from_utf8_lossy(&strict.stdout)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn audit_clean_fixture_reports_no_problems() {
+    // The Go fixture (main.go → util/util.go) has no cycles and no broken imports, so the audit
+    // reports a clean bill of health and exits 0 even under `--strict`.
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(fixture())
+        .arg("--strict")
+        .output()
+        .expect("run compass audit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "a clean repo must exit 0 even with --strict; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Circular imports: none"),
+        "stdout:\n{stdout}"
+    );
+    assert!(stdout.contains("Broken imports: none"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("Summary: clean"),
+        "a clean repo should say so plainly:\n{stdout}"
+    );
+}
+
+#[test]
+fn audit_empty_repo_is_clean_under_strict() {
+    // FOCUS empty-repo case: a 0-file directory must not panic, reports a clean bill of health, and
+    // exits 0 even under --strict.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("audit-empty");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(&dir)
+        .arg("--strict")
+        .output()
+        .expect("run compass audit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "an empty repo must exit 0 even with --strict; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("Summary: clean"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("Circular imports: none"),
+        "stdout:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn audit_broken_import_is_a_problem_not_an_isolated_smell() {
+    // The Python fixture's only file has a broken import. It must be reported as a Problem and NOT
+    // double-listed as an "isolated" smell (its import didn't resolve — it isn't disconnected).
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(fixture_broken())
+        .output()
+        .expect("run compass audit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "default audit must exit 0");
+    assert!(
+        stdout.contains("Broken imports (1)"),
+        "the broken import should be a Problem:\n{stdout}"
+    );
+    assert!(stdout.contains("main.py"), "stdout:\n{stdout}");
+    // The broken-import file is excluded from the isolated smell, so there are none here.
+    assert!(
+        stdout.contains("Isolated files: none"),
+        "a broken-import file must not also be listed as isolated:\n{stdout}"
+    );
+
+    // --strict must fail on the broken import (a real problem).
+    let strict = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(fixture_broken())
+        .arg("--strict")
+        .output()
+        .expect("run compass audit --strict");
+    assert!(
+        !strict.status.success(),
+        "--strict must exit non-zero on a broken import:\n{}",
+        String::from_utf8_lossy(&strict.stdout)
+    );
+}
+
+#[test]
+fn audit_lists_isolated_files_and_limit_elides() {
+    // A repo with one connected pair (a → b) and several standalone files. The standalone files are
+    // isolated; --limit caps the printed list and reports how many more were hidden.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("audit-isolated");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src").join("a.ts"),
+        "import { b } from \"./b\";\nexport function a(): void { b(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src").join("b.ts"),
+        "export function b(): void {}\n",
+    )
+    .unwrap();
+    // Five standalone files with no imports in or out.
+    for name in ["s1", "s2", "s3", "s4", "s5"] {
+        std::fs::write(
+            dir.join("src").join(format!("{name}.ts")),
+            format!("export const {name} = 1;\n"),
+        )
+        .unwrap();
+    }
+
+    // Full list: every standalone file is reported as isolated; a/b are connected so excluded.
+    let full = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(&dir)
+        .output()
+        .expect("run compass audit");
+    let stdout = String::from_utf8_lossy(&full.stdout);
+    assert!(full.status.success());
+    assert!(
+        stdout.contains("Isolated files (5)"),
+        "the five standalone files should be isolated:\n{stdout}"
+    );
+    assert!(stdout.contains("src/s1.ts"), "stdout:\n{stdout}");
+    assert!(
+        !stdout.contains("- src/a.ts"),
+        "a connected file must not be isolated:\n{stdout}"
+    );
+
+    // --limit 2 caps the list and elides the rest.
+    let capped = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(&dir)
+        .arg("--limit")
+        .arg("2")
+        .output()
+        .expect("run compass audit --limit 2");
+    let capped_out = String::from_utf8_lossy(&capped.stdout);
+    assert!(
+        capped_out.contains("… and 3 more"),
+        "the capped list should elide the remainder:\n{capped_out}"
+    );
+    // The summary still reports the complete count.
+    assert!(
+        capped_out.contains("5 isolated files noted as smells"),
+        "the summary count must be complete even when the list is capped:\n{capped_out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn audit_json_output_is_machine_readable() {
+    // The two-file TS cycle, audited with --json, must emit a parseable report whose summary and
+    // circular_imports (with a concrete path) reflect the cycle.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("audit-json");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src").join("a.ts"),
+        "import { b } from \"./b\";\nexport function a(): void { b(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src").join("b.ts"),
+        "import { a } from \"./a\";\nexport function b(): void { a(); }\n",
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("audit")
+        .arg(&dir)
+        .arg("--json")
+        .output()
+        .expect("run compass audit --json");
+    assert!(out.status.success(), "default audit (json) must exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("audit --json must be valid JSON: {e}\n{stdout}"));
+
+    assert_eq!(report["summary"]["clean"], serde_json::json!(false));
+    assert_eq!(report["summary"]["problem_count"], serde_json::json!(1));
+    let cycles = report["problems"]["circular_imports"]
+        .as_array()
+        .expect("circular_imports array");
+    assert_eq!(cycles.len(), 1, "report:\n{stdout}");
+    let path = cycles[0]["path"].as_array().expect("cycle path array");
+    assert_eq!(path.len(), 2, "the 2-cycle path has both files:\n{stdout}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn mcp_lists_tools_and_resolves_dependencies() {
     let stdout = mcp_session(
         fixture(),
@@ -479,6 +746,9 @@ fn mcp_lists_tools_and_resolves_dependencies() {
     assert!(stdout.contains("graph_stats"), "stdout:\n{stdout}");
     assert!(stdout.contains("hubs"), "stdout:\n{stdout}");
     assert!(stdout.contains("get_community"), "stdout:\n{stdout}");
+    // ...and the audit-surfacing tools (so an AI host can ask about cycles / isolated files).
+    assert!(stdout.contains("import_cycles"), "stdout:\n{stdout}");
+    assert!(stdout.contains("isolated_files"), "stdout:\n{stdout}");
     // file_dependencies(main.go) resolves the internal import.
     assert!(stdout.contains("util/util.go"), "stdout:\n{stdout}");
     // graph_stats returns a sensible payload (its file_count field).
