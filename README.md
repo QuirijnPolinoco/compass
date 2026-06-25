@@ -82,49 +82,74 @@ Adding a language is a self-contained unit of work behind a stable interface —
 
 ## Install
 
-Compass is one self-contained binary. Building from source works on every OS today; a prebuilt
-download is offered when a release is available.
+Compass is one self-contained binary. The installer grabs the prebuilt release binary for your
+platform, **verifies its SHA-256 checksum**, smoke-tests it, and installs `compass` — no compiler,
+no Rust toolchain. On Windows it adds `compass` to your `PATH` automatically; on macOS/Linux it
+installs to `~/.local/bin` and, if that isn't already on your `PATH`, prints the exact line to add
+for *your* shell.
 
-### 1. Prerequisites — Rust + a C compiler (for the tree-sitter grammars)
-
-| OS | Rust | C compiler |
-|----|------|-----------|
-| **Windows** | [rustup](https://rustup.rs) | **Microsoft C++ Build Tools** → "Desktop development with C++" |
-| **macOS** | [rustup](https://rustup.rs) | `xcode-select --install` |
-| **Linux** | [rustup](https://rustup.rs) | `sudo apt install build-essential` · `sudo dnf groupinstall "Development Tools"` |
-
-`cargo --version` should print **1.85+**.
-
-### 2. Install
+**macOS / Linux**
 
 ```sh
-# from a clone — build + install
-cargo install --path crates/compass-cli
-
-# or straight from GitHub, no clone (build from source)
-cargo install --git https://github.com/QuirijnPolinoco/compass compass-cli
-
-# or grab a prebuilt binary instead of compiling (needs cargo-binstall)
-cargo binstall --git https://github.com/QuirijnPolinoco/compass compass-cli
+curl -fsSL https://raw.githubusercontent.com/QuirijnPolinoco/compass/main/install.sh | sh
 ```
 
-Any of these put `compass` in Cargo's bin dir — `%USERPROFILE%\.cargo\bin` (Windows) or
-`~/.cargo/bin` (macOS/Linux), already on your `PATH` via rustup. Open a new terminal and check:
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/QuirijnPolinoco/compass/main/install.ps1 | iex
+```
+
+Then open a new terminal and check:
 
 ```sh
 compass --help
 compass languages      # lists all 10 languages
 ```
 
+What it does: downloads the matching archive from the [latest GitHub
+release](https://github.com/QuirijnPolinoco/compass/releases/latest) over HTTPS, checks it against
+the published `.sha256` (aborting on any mismatch), unpacks, and installs to `~/.local/bin`
+(macOS/Linux) or `%LOCALAPPDATA%\Compass\bin` (Windows). Knobs: `COMPASS_VERSION=v0.6.0` pins a
+release, `COMPASS_INSTALL_DIR` changes the target dir, and `COMPASS_MUSL=1` forces the static musl
+Linux build — already auto-detected on musl systems like Alpine, and used automatically as a
+fallback if the glibc build won't run on an older libc. Prefer to inspect first? Read
+[`install.sh`](install.sh) / [`install.ps1`](install.ps1) and pipe a downloaded copy instead.
+
+**Uninstall.** macOS/Linux: `rm ~/.local/bin/compass` (and remove any `export PATH=…` line you
+added). Windows: re-run the one-liner with `$env:COMPASS_UNINSTALL=1` set — it removes
+`compass.exe` and takes the install dir back off your user `PATH`.
+
+> **Linux arm64** has no prebuilt binary yet — the installer will tell you and point you at the
+> from-source build below.
+
+### From source (other platforms · contributors)
+
+Need an unsupported platform (e.g. linux/arm64), or hacking on Compass? Build it yourself. You'll
+need [rustup](https://rustup.rs) (`cargo --version` ≥ **1.85**) and a C compiler for the
+tree-sitter grammars:
+
+| OS | C compiler |
+|----|-----------|
+| **Windows** | **Microsoft C++ Build Tools** → "Desktop development with C++" |
+| **macOS** | `xcode-select --install` |
+| **Linux** | `sudo apt install build-essential` · `sudo dnf groupinstall "Development Tools"` |
+
+```sh
+# from a clone — build + install
+cargo install --path crates/compass-cli
+
+# or straight from GitHub, no clone
+cargo install --git https://github.com/QuirijnPolinoco/compass compass-cli
+```
+
+Either way `compass` lands in Cargo's bin dir (`~/.cargo/bin`, or `%USERPROFILE%\.cargo\bin` on
+Windows), already on your `PATH` via rustup. `cargo binstall --git
+https://github.com/QuirijnPolinoco/compass compass-cli` also works if you have
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall). **Homebrew** and **Scoop** formulas
+live in [`packaging/`](packaging/).
+
 > **Just trying it?** From a clone: `cargo run -p compass-cli -- map .` (no install).
-
-### 3. Prebuilt binary (download)
-
-Grab your platform's archive (+ its `.sha256`) from the
-[latest release](https://github.com/QuirijnPolinoco/compass/releases/latest), unpack, and put
-`compass` on your `PATH`. **Homebrew** and **Scoop** formulas live in
-[`packaging/`](packaging/) (point them at a tap/bucket to enable `brew install …` /
-`scoop install compass`).
 
 * * *
 

@@ -13,6 +13,24 @@ the per-platform archives + `.sha256` checksums attached to each GitHub Release 
 
 ## Channels
 
+### Install scripts (the headline path — no extra repo needed)
+
+[`install.sh`](../install.sh) (macOS/Linux) and [`install.ps1`](../install.ps1) (Windows) are the
+one-liners advertised in the README. They consume the release assets directly:
+
+- `install.sh` maps `uname` to the target triple, downloads `compass-<target>.tar.gz` + its
+  `.sha256`, verifies the checksum, smoke-tests the binary, and installs `compass` to `~/.local/bin`
+  (`COMPASS_INSTALL_DIR` overrides). The static musl build is auto-detected on Alpine/musl and used
+  as a fallback when the glibc build won't run on an older libc; `COMPASS_MUSL=1` forces it.
+- `install.ps1` always pulls `compass-x86_64-pc-windows-msvc.zip` + its `.sha256`, verifies via
+  `Get-FileHash`, installs `compass.exe` to `%LOCALAPPDATA%\Compass\bin`, and adds it to the user
+  PATH. Re-running with `$env:COMPASS_UNINSTALL=1` removes the binary and the PATH entry.
+
+Both honor `COMPASS_VERSION` to pin a tag (default: latest) and abort on any checksum mismatch.
+No maintainer action per release — they always resolve the matching assets by name, so a fresh
+`v*` tag is picked up automatically. There is no linux/arm64 asset, so `install.sh` falls back to a
+clear from-source message on that platform.
+
 ### cargo-binstall (no extra repo needed)
 
 Works straight off the release via the `[package.metadata.binstall]` in
