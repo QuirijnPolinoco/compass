@@ -10,7 +10,7 @@
 class Compass < Formula
   desc "Local-first tool that maps a codebase into a queryable graph for AI and humans"
   homepage "https://github.com/QuirijnPolinoco/compass"
-  version "0.6.0"
+  version "0.7.0"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
