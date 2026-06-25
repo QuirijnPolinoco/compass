@@ -111,6 +111,141 @@ fn mcp_session(dir: PathBuf, messages: &[&str]) -> String {
 }
 
 #[test]
+fn install_claude_writes_settings_hook_and_mcp() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-claude");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("install")
+        .arg("--claude")
+        .arg(&dir)
+        .output()
+        .expect("run compass install --claude");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let settings =
+        std::fs::read_to_string(dir.join(".claude/settings.json")).expect("settings.json written");
+    assert!(
+        settings.contains("UserPromptSubmit"),
+        "settings:\n{settings}"
+    );
+    assert!(settings.contains("context"), "settings:\n{settings}");
+    assert!(settings.contains("--hook"), "settings:\n{settings}");
+
+    assert!(dir.join(".mcp.json").exists(), ".mcp.json not written");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_cursor_writes_mcp_server() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-cursor");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("install")
+        .arg("--cursor")
+        .arg(&dir)
+        .output()
+        .expect("run compass install --cursor");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mcp = std::fs::read_to_string(dir.join(".cursor/mcp.json")).expect(".cursor/mcp.json");
+    assert!(mcp.contains("compass"), "mcp:\n{mcp}");
+    assert!(mcp.contains("serve"), "mcp:\n{mcp}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_codex_writes_agents_md_idempotently() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-codex");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let run = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+            .arg("install")
+            .arg("--codex")
+            .arg(&dir)
+            .output()
+            .expect("run compass install --codex");
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run();
+    let agents = std::fs::read_to_string(dir.join("AGENTS.md")).expect("AGENTS.md written");
+    assert!(agents.contains("Compass"), "AGENTS.md:\n{agents}");
+
+    // Idempotent: a second run must not append the section twice.
+    run();
+    let agents = std::fs::read_to_string(dir.join("AGENTS.md")).expect("AGENTS.md");
+    assert_eq!(
+        agents.matches("## Compass").count(),
+        1,
+        "expected exactly one `## Compass` section:\n{agents}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_claude_preserves_existing_settings() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-claude-merge");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".claude")).unwrap();
+    std::fs::write(dir.join("a.go"), "package m\n\nfunc A() {}\n").unwrap();
+
+    // Pre-write a settings.json with an unrelated key that must survive the merge.
+    std::fs::write(
+        dir.join(".claude/settings.json"),
+        r#"{ "unrelatedKey": "keep-me" }"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("install")
+        .arg("--claude")
+        .arg(&dir)
+        .output()
+        .expect("run compass install --claude");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let settings = std::fs::read_to_string(dir.join(".claude/settings.json")).expect("settings");
+    // The pre-existing key survived...
+    assert!(settings.contains("unrelatedKey"), "settings:\n{settings}");
+    assert!(settings.contains("keep-me"), "settings:\n{settings}");
+    // ...and the hook was added.
+    assert!(
+        settings.contains("UserPromptSubmit"),
+        "settings:\n{settings}"
+    );
+    assert!(settings.contains("--hook"), "settings:\n{settings}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn overview_of_go_fixture() {
     let output = Command::new(env!("CARGO_BIN_EXE_compass"))
         .arg("overview")
