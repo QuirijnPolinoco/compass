@@ -66,6 +66,9 @@ caveats (n=1, self-reported, etc.) — including where Compass *doesn't* win —
 | **Cursor · Windsurf · any MCP host** | MCP server over stdio (`compass serve`) |
 | **Anything else** | pipe `compass context` output into the prompt yourself |
 
+One command sets these up: `compass install [--claude|--cursor|--codex|--all]` (add `--guard` for
+the opt-in destructive-edit guard). It only writes per-host config — no telemetry, no network.
+
 * * *
 
 ## Supported languages
@@ -157,30 +160,44 @@ live in [`packaging/`](packaging/).
 
 ```sh
 cd your/project
-compass init     # build the map (.compass/) + write .mcp.json for MCP hosts
-compass map      # open the live visual map (auto-picks a free localhost port)
+compass init                 # build the map (.compass/) + write .mcp.json for MCP hosts
+compass install --all        # wire Compass into Claude Code, Cursor & Codex (idempotent)
+compass map                  # open the live visual map (auto-picks a free localhost port)
 ```
 
-`compass init` is idempotent — re-run it anytime. Common commands:
+`compass init` and `compass install` are both idempotent — re-run them anytime. Common commands:
 
 | Command | What it does |
 |---------|--------------|
-| `compass init` | Map the repo + wire up MCP |
+| `compass init` | Map the repo + write `.mcp.json` for MCP hosts |
+| `compass install [--claude\|--cursor\|--codex\|--all]` | Wire Compass into AI hosts in one command (`--guard` adds the opt-in edit guard) |
 | `compass map` | Live, interactive visual map in the browser (`--snapshot` for a static `.html`) |
 | `compass context --query "…"` | The relevant map slice to pre-inject into a prompt |
 | `compass overview` | Human-readable summary (files, languages, most-connected) |
+| `compass audit` | Graph-driven health report: cycles & broken imports (provable) vs. hub/isolated smells (`--strict` for CI, `--json`, `--limit N`) |
 | `compass deps <file>` | What a file imports and what imports it |
 | `compass broken` | Imports that resolve to no real file |
 | `compass watch` | Re-map automatically as you edit |
 | `compass serve` | Run the MCP server over stdio |
+| `compass guard` | Opt-in `PreToolUse` hook — asks before editing a hub file (wired by `install --guard`) |
 
 * * *
 
 ## Make your assistant always use the map
 
 The biggest win is **pre-injection** — give the AI the right context *before* it starts, so it
-never wastes turns exploring. For **Claude Code**, drop this into your project's
-`.claude/settings.json`:
+never wastes turns exploring. **One command wires it up** (host-agnostic, no telemetry, and
+idempotent — safe to re-run; existing config is merged, never duplicated):
+
+```sh
+compass install --all        # Claude Code + Cursor + Codex at once
+compass install --claude     # just Claude Code: the UserPromptSubmit hook + .mcp.json
+compass install --cursor     # just Cursor: .cursor/mcp.json
+compass install --codex      # just Codex / any AGENTS.md host: a "## Compass" guidance block
+```
+
+For **Claude Code**, `--claude` writes the `UserPromptSubmit` hook below into the repo's
+`.claude/settings.json` (and ensures `.mcp.json`). Prefer to wire it by hand? It's just this:
 
 ```json
 {
@@ -197,15 +214,35 @@ compact map slice Claude Code adds to the context — no scripting, cross-platfo
 and fast (it uses the `.compass/` cache). Details + the `/compass` slash command:
 [integrations/claude-code](integrations/claude-code/).
 
-For other hosts, `compass init` registers the MCP server, exposing these tools:
+### Guard your hubs (opt-in)
+
+`compass install --guard` additionally wires a **`PreToolUse`** hook that runs `compass guard`
+before a destructive edit (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) to a **hub / heavily
+depended-on file**, asking you to confirm first. Be clear-eyed about it: this is a **convenience,
+not a safety guarantee**. It reads only the cached `.compass/` map, **fails open** on any doubt
+(unknown tool, unmappable path, no map, file not in the map → allows silently, never panics), and
+is blind to edits made via the Bash tool (`sed -i`, `>` redirection). It is **never** added by a
+bare `install`/`--all` — only by `--guard`, and only does anything once `compass init` has built
+the map. Two env knobs tune it: `COMPASS_GUARD_MIN_DEGREE` (override the in-degree threshold) and
+`COMPASS_GUARD_BLOCK=1` (escalate the non-blocking *ask* to a hard *deny*). Full notes:
+[integrations/claude-code](integrations/claude-code/).
+
+### MCP tools
+
+For any host, `compass init`/`install` registers the MCP server (`compass serve`), exposing:
 
 | Tool | Returns |
 |------|---------|
-| `overview` | File/symbol/import counts, per-language breakdown, most-connected files |
+| `overview` | File/symbol/import counts + per-language breakdown |
+| `graph_stats` | High-level stats: edge counts split **resolved vs. heuristic**, community & hub counts, most-connected files |
 | `file_dependencies` | What a file imports and what imports it |
-| `subgraph` | The neighborhood around a file — a small, cheap slice instead of grepping |
+| `subgraph` | The neighborhood around a file (N import-hops) — a small, cheap slice instead of grepping |
 | `shortest_path` | The import chain connecting two files |
+| `hubs` | The files that bridge many communities — shared hubs / "god files" |
+| `get_community` | The files in one community (a cohesive sub-part of the repo) |
+| `import_cycles` | Circular-import clusters, each with a concrete cycle path (which edge to cut) |
 | `broken_imports` | Imports that resolve to no real file |
+| `isolated_files` | Files with no resolved import edges in or out (a smell, not a defect) |
 
 * * *
 
@@ -219,6 +256,13 @@ that **updates live as you edit** (it re-lays-out in place, no refresh).
   or by type. Switch to color-by-folder or by-language with one click; shared hubs render neutral.
 - **Files or symbols.** A file-level graph by default; toggle **Symbols** to expand into
   functions/classes. Plus search, zoom-to-reveal labels, and node sizes scaled by connectivity.
+- **Certain vs. guessed edges.** Each import/call edge is tagged **Resolved** (path-exact) or
+  **Heuristic** (a convention-based guess — e.g. a namespace mapped to a directory). Heuristic
+  edges render **dotted + faint** so you can tell certain structure from guesses at a glance.
+- **Token-savings dashboard.** Open **`/tokens`** for a local readout of how many tokens
+  pre-injection has injected and how many it **saved by session de-dup** (not re-sending files the
+  AI has already seen this session). The counts are **estimates** (chars ÷ 4) and the page labels
+  them so — and like the map itself it's loopback-only, no network.
 - **Local-first.** The server binds **`127.0.0.1` only**, is read-only, lives only while the
   command runs, and the renderer is embedded — so it works with no internet.
 
