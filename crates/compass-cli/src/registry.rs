@@ -41,5 +41,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-c")]
     registry.register(Box::new(compass_lang_c::CExtractor));
 
+    #[cfg(feature = "lang-cpp")]
+    registry.register(Box::new(compass_lang_cpp::CppExtractor));
+
     registry
 }

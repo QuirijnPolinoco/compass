@@ -48,7 +48,7 @@ Language roadmap (by difficulty / ROI)
 
 Tier 1 (v1): Go, Python, Java, C#, TypeScript/JavaScript
 Tier 2: Rust, Kotlin, Ruby, PHP, C
-Tier 3 (hard): C++, Swift, F#
+Tier 3 (hard): C++ (shipped), Swift, F#
 Web assets (in scope): HTML/CSS — maps a different kind of relationship (links and references, not function calls): <link>/<script>/<a> references between files, asset links, and CSS class/ID usage across HTML. Built on the same extractor interface, just emitting reference-type edges.
 Separate extractor (later): SQL — table/column/foreign-key graph, distinct from code.
 

@@ -15,11 +15,11 @@
     },
     {
       "h": "Language support (the unit of growth)",
-      "body": "10 languages shipped: Go, Python, Java, C#, TypeScript (incl. JS/JSX), Rust, Kotlin, Ruby, PHP, C. Adding one = copy compass-lang-template, implement the Extractor trait (detection, grammar, extract, resolve), add the crate to the workspace + an optional dep and lang-<name> feature in compass-cli/Cargo.toml + one register(...) line in registry.rs. Definition of Done in CONTRIBUTING.md §4."
+      "body": "11 languages shipped: Go, Python, Java, C#, TypeScript (incl. JS/JSX), Rust, Kotlin, Ruby, PHP, C, C++. Adding one = copy compass-lang-template, implement the Extractor trait (detection, grammar, extract, resolve), add the crate to the workspace + an optional dep and lang-<name> feature in compass-cli/Cargo.toml + one register(...) line in registry.rs. Definition of Done in CONTRIBUTING.md §4."
     },
     {
       "h": "Current focus",
-      "body": "Expand language coverage. C++ is the recommended next add: high real-world usage, mature tree-sitter-cpp grammar, and the existing C crate's quoted-#include resolver is a near-direct reuse. Swift and Scala are the strongest runners-up."
+      "body": "Expand language coverage. C++ has now been added (compass-lang-cpp: classes, structs, unions, enums, namespaces, functions + quoted-#include resolution reused from the C crate). Swift and Scala are the strongest runners-up for the next adds."
     }
   ],
   "milestones": [
@@ -29,7 +29,7 @@
     {"t": "Prompt pre-injection (ADR-0006)", "done": true},
     {"t": "10 languages mapped", "done": true},
     {"t": "Release 0.7.0", "done": true},
-    {"t": "Add C++ language extractor", "done": false},
+    {"t": "Add C++ language extractor", "done": true},
     {"t": "Evaluate Swift and Scala extractors", "done": false}
   ]
 }

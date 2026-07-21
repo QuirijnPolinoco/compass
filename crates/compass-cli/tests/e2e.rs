@@ -85,6 +85,10 @@ fn fixture_c() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-c")
 }
 
+fn fixture_cpp() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-cpp")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -281,6 +285,25 @@ fn overview_of_c_fixture() {
     assert!(stdout.contains("files:        2"), "stdout:\n{stdout}");
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn overview_of_cpp_fixture() {
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("overview")
+        .arg(fixture_cpp())
+        .output()
+        .expect("run compass");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // main.cpp + util.hpp; `#include "util.hpp"` resolves to one edge (`<iostream>` is external).
+    assert!(stdout.contains("files:        2"), "stdout:\n{stdout}");
+    assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
+    assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
+    assert!(stdout.contains("cpp"), "stdout:\n{stdout}");
 }
 
 #[test]
