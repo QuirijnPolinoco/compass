@@ -1,20 +1,6 @@
 {
   "todo": [
     {
-      "title": "Add C++ language extractor (compass-lang-cpp)",
-      "desc": "Recommended next language. tree-sitter-cpp grammar; reuse C's quoted-#include resolver; handle namespaces/classes.",
-      "tags": [
-        {
-          "t": "language",
-          "kind": "area"
-        },
-        {
-          "t": "high",
-          "kind": "high"
-        }
-      ]
-    },
-    {
       "title": "Evaluate Swift and Scala extractors",
       "desc": "Runner-up languages for coverage: Swift (mobile, pairs with Kotlin) and Scala (JVM).",
       "tags": [
@@ -30,7 +16,22 @@
     }
   ],
   "in_progress": [],
-  "in_review": [],
+  "in_review": [
+    {
+      "title": "Add C++ language extractor (compass-lang-cpp)",
+      "desc": "Recommended next language. tree-sitter-cpp grammar; reuse C's quoted-#include resolver; handle namespaces/classes.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "high",
+          "kind": "high"
+        }
+      ]
+    }
+  ],
   "done": [
     {
       "title": "Core graph model + query engine (compass-core)",
