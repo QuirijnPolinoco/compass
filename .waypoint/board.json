@@ -1,0 +1,106 @@
+{
+  "todo": [
+    {
+      "title": "Add C++ language extractor (compass-lang-cpp)",
+      "desc": "Recommended next language. tree-sitter-cpp grammar; reuse C's quoted-#include resolver; handle namespaces/classes.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "high",
+          "kind": "high"
+        }
+      ]
+    },
+    {
+      "title": "Evaluate Swift and Scala extractors",
+      "desc": "Runner-up languages for coverage: Swift (mobile, pairs with Kotlin) and Scala (JVM).",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "low",
+          "kind": "low"
+        }
+      ]
+    }
+  ],
+  "in_progress": [],
+  "in_review": [],
+  "done": [
+    {
+      "title": "Core graph model + query engine (compass-core)",
+      "desc": "Language-agnostic graph, node/edge types, Diagnostic, query port.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "Stable Extractor trait + tree-sitter harness (compass-extract)",
+      "desc": "extract + resolve interface, RawImport, ResolutionContext, Detection, registry.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "Engine: walk + index + cache (compass-engine)",
+      "desc": "gitignore-aware walk, detection, incremental index + cache.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "MCP server + query tools (compass-mcp)",
+      "desc": "overview, file_dependencies, broken_imports, cycles, subgraph, shortest_path, stats.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "Visual map server + Cytoscape front-end (compass-viz)",
+      "desc": "tiny_http on 127.0.0.1, live force-directed graph.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "CLI init / install / map + AI wiring (compass-cli)",
+      "desc": "Composition root, cfg-gated registry, Claude/Cursor/Codex install, prompt pre-injection.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "Language extractors shipped: Go, Python, Java, C#, TypeScript/JS, Rust, Kotlin, Ruby, PHP, C",
+      "desc": "10 languages, each a self-contained compass-lang-* crate with fixtures + snapshot tests.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        }
+      ]
+    }
+  ]
+}
