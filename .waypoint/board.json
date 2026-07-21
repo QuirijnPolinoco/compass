@@ -16,22 +16,7 @@
     }
   ],
   "in_progress": [],
-  "in_review": [
-    {
-      "title": "Add C++ language extractor (compass-lang-cpp)",
-      "desc": "Recommended next language. tree-sitter-cpp grammar; reuse C's quoted-#include resolver; handle namespaces/classes.",
-      "tags": [
-        {
-          "t": "language",
-          "kind": "area"
-        },
-        {
-          "t": "high",
-          "kind": "high"
-        }
-      ]
-    }
-  ],
+  "in_review": [],
   "done": [
     {
       "title": "Core graph model + query engine (compass-core)",
@@ -100,6 +85,20 @@
         {
           "t": "language",
           "kind": "area"
+        }
+      ]
+    },
+    {
+      "title": "Add C++ language extractor (compass-lang-cpp)",
+      "desc": "Recommended next language. tree-sitter-cpp grammar; reuse C's quoted-#include resolver; handle namespaces/classes.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "high",
+          "kind": "high"
         }
       ]
     }
