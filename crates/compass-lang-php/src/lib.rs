@@ -2,7 +2,8 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection (.php + shebang), the tree-sitter-php grammar, symbol extraction (classes,
-//! interfaces, traits, enums, functions, methods), and `require`/`include` resolution.
+//! interfaces, traits, enums, functions, methods), plain-call capture, and `require`/`include`
+//! resolution.
 //!
 //! In-repo file dependencies come from `require`/`include` (+`_once`) with a literal path,
 //! resolved relative to the importing file. `use` imports rely on PSR-4 autoloading
@@ -12,8 +13,8 @@ use std::path::Path;
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -39,11 +40,18 @@ impl Extractor for PhpExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -106,39 +114,133 @@ fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn visit(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>, imports: &mut Vec<RawImport>) {
-    match node.kind() {
-        "class_declaration" => push_named(node, "name", SymbolKind::Class, src, symbols),
-        "interface_declaration" => push_named(node, "name", SymbolKind::Interface, src, symbols),
-        // A trait is a class-like unit of reusable methods (interfaces are separate in PHP).
-        "trait_declaration" => push_named(node, "name", SymbolKind::Class, src, symbols),
-        "enum_declaration" => push_named(node, "name", SymbolKind::Enum, src, symbols),
-        "method_declaration" => push_named(node, "name", SymbolKind::Method, src, symbols),
-        "function_definition" => push_named(node, "name", SymbolKind::Function, src, symbols),
-        "require_expression"
-        | "require_once_expression"
-        | "include_expression"
-        | "include_once_expression" => {
-            // Only literal-path includes are resolvable (skip `__DIR__ . '...'` concat).
-            if let Some(string) = first_child_of_kind(node, "string") {
-                if let Ok(text) = string.utf8_text(src) {
-                    imports.push(RawImport {
-                        specifier: text.trim_matches(|c| c == '\'' || c == '"').to_string(),
-                        span: span_of(node),
-                    });
+/// What a subtree is nested in. `current_fn` is the `symbols` index of the enclosing
+/// function, to which calls are attributed (`None` outside any).
+#[derive(Default)]
+struct Scope {
+    current_fn: Option<usize>,
+}
+
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            "class_declaration" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols)
+            }
+            "interface_declaration" => {
+                push_named(node, "name", SymbolKind::Interface, self.src, self.symbols)
+            }
+            // A trait is a class-like unit of reusable methods (interfaces are separate in PHP).
+            "trait_declaration" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols)
+            }
+            "enum_declaration" => {
+                push_named(node, "name", SymbolKind::Enum, self.src, self.symbols)
+            }
+            "method_declaration" => return self.enter_function(node, SymbolKind::Method, scope),
+            "function_definition" => return self.enter_function(node, SymbolKind::Function, scope),
+            "require_expression"
+            | "require_once_expression"
+            | "include_expression"
+            | "include_once_expression" => {
+                // Only literal-path includes are resolvable (skip `__DIR__ . '...'` concat).
+                if let Some(string) = first_child_of_kind(node, "string") {
+                    if let Ok(text) = string.utf8_text(self.src) {
+                        self.imports.push(RawImport {
+                            specifier: text.trim_matches(|c| c == '\'' || c == '"').to_string(),
+                            span: span_of(node),
+                        });
+                    }
                 }
             }
+            "function_call_expression" | "member_call_expression" | "scoped_call_expression" => {
+                let callee = callee_name(node, self.src);
+                self.push_call(node, callee, scope);
+            }
+            // `new Helper()` — a call to the class (its constructor).
+            "object_creation_expression" => {
+                let callee = first_child_of_kind(node, "name")
+                    .and_then(|n| n.utf8_text(self.src).ok())
+                    .map(str::to_string);
+                self.push_call(node, callee, scope);
+            }
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, scope);
     }
 
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, symbols, imports);
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
         }
-        i += 1;
     }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+
+    /// Push the function's symbol, then walk its body with that symbol as the caller (if it
+    /// got a symbol at all — otherwise keep the parent as caller).
+    fn enter_function(&mut self, node: Node, kind: SymbolKind, scope: &Scope) {
+        let idx = self.symbols.len();
+        push_named(node, "name", kind, self.src, self.symbols);
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(node, &Scope { current_fn });
+    }
+}
+
+/// The callee name when it can be named without type information: a plain function call
+/// (`helper()`), a method on `$this`, or a `self::` / `static::` / `parent::` call. Calls on any
+/// other receiver (`$other->go()`, `Util::stat()`) need type resolution we don't do, so they're
+/// left for the engine to never see rather than guessed at.
+fn callee_name(call: Node, src: &[u8]) -> Option<String> {
+    let name = match call.kind() {
+        "function_call_expression" => {
+            // A `name` callee is a plain function; `$fn()` / `$obj->m()()` are dynamic.
+            call.child_by_field_name("function")?
+        }
+        "member_call_expression" => {
+            let object = call.child_by_field_name("object")?;
+            if object.utf8_text(src) != Ok("$this") {
+                return None;
+            }
+            call.child_by_field_name("name")?
+        }
+        "scoped_call_expression" => {
+            let scope = call.child_by_field_name("scope")?;
+            if scope.kind() != "relative_scope" {
+                return None;
+            }
+            call.child_by_field_name("name")?
+        }
+        _ => return None,
+    };
+    if name.kind() != "name" {
+        return None;
+    }
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 fn first_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
@@ -328,5 +430,48 @@ function main(): void {
     fn parent_dir_drops_filename() {
         assert_eq!(parent_dir("src/index.php"), "src");
         assert_eq!(parent_dir("index.php"), "");
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Plain calls, `$this->`, `self::`/`static::` and `new Type()` are captured; calls on
+        // other receivers (`$other->go()`, `Util::stat()`) and file-scope calls are not.
+        let src = r#"<?php
+function helper() {}
+
+class Service {
+    function run($other) {
+        $this->prepare();
+        helper();
+        $other->prepare();
+        Util::stat();
+        self::create();
+        static::build();
+        new Worker();
+    }
+    function prepare() {}
+}
+
+helper();
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> = [
+            ("run", "Worker"),
+            ("run", "build"),
+            ("run", "create"),
+            ("run", "helper"),
+            ("run", "prepare"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(got, want);
     }
 }
