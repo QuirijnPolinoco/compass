@@ -508,7 +508,22 @@ pub trait MapQuery {
     /// audit reports them for review rather than asserting a problem. A file whose only import is
     /// broken is excluded: it is already surfaced as a Problem, not disconnected.
     fn isolated_files(&self) -> Vec<String>;
+    /// "What breaks if I change this?" (FR-18/E2): every file that imports `file` directly or
+    /// transitively, with its distance in import-hops, nearest first. `None` if the file isn't
+    /// in the map.
+    fn impact(&self, file: &str) -> Option<Impact>;
+    /// Where a symbol is defined. Matches `name` case-insensitively — exact matches first, then
+    /// names that merely contain it — capped at [`MAX_SYMBOL_MATCHES`], so an assistant can jump
+    /// to a definition instead of grepping for it.
+    fn find_symbol(&self, name: &str) -> Vec<SymbolRef>;
+    /// The call edges around every symbol named exactly `name` (optionally only in `file`): who
+    /// calls it and what it calls. Only languages whose extractor emits calls contribute, and
+    /// only calls that could be resolved unambiguously are edges at all.
+    fn symbol_calls(&self, name: &str, file: Option<&str>) -> Vec<SymbolCalls>;
 }
+
+/// Upper bound on [`MapQuery::find_symbol`] results, to keep a broad query cheap.
+pub const MAX_SYMBOL_MATCHES: usize = 50;
 
 /// A high-level summary of the map (FR-3/B1, the `overview` MCP tool).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -729,6 +744,54 @@ pub struct CommunityView {
     pub files: Vec<String>,
     /// Those members that are community-bridging hubs, sorted.
     pub hubs: Vec<String>,
+}
+
+/// The blast radius of changing one file (FR-18/E2, the `impact` MCP tool).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Impact {
+    pub file: String,
+    /// How many files import it directly.
+    pub direct_count: usize,
+    /// How many files import it directly or transitively.
+    pub total_count: usize,
+    /// Every affected file, nearest first (then by path).
+    pub affected: Vec<ImpactedFile>,
+}
+
+/// One file affected by a change, and how far downstream it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImpactedFile {
+    pub file: String,
+    /// Import-hops from the changed file: 1 = imports it directly.
+    pub distance: usize,
+}
+
+/// A symbol and where it is defined.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolRef {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub file: String,
+    /// 1-based line of the definition.
+    pub line: usize,
+}
+
+/// The other end of a call edge, with how the edge was resolved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallRef {
+    #[serde(flatten)]
+    pub symbol: SymbolRef,
+    pub confidence: EdgeConfidence,
+}
+
+/// The call edges in and out of one symbol (the `symbol_calls` MCP tool).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolCalls {
+    pub symbol: SymbolRef,
+    /// Symbols that call this one.
+    pub callers: Vec<CallRef>,
+    /// Symbols this one calls.
+    pub callees: Vec<CallRef>,
 }
 
 impl MapQuery for Graph {
@@ -1198,9 +1261,136 @@ impl MapQuery for Graph {
         files.sort();
         files
     }
+
+    fn impact(&self, file: &str) -> Option<Impact> {
+        let start = self.file_id(Path::new(file))?;
+
+        let mut importers: HashMap<FileId, Vec<FileId>> = HashMap::new();
+        for (from, to, _) in &self.imports {
+            importers.entry(*to).or_default().push(*from);
+        }
+
+        // Breadth-first over "is imported by", so each file gets its shortest distance.
+        let mut distance: HashMap<FileId, usize> = HashMap::from([(start, 0)]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(current) = queue.pop_front() {
+            let next = distance[&current] + 1;
+            for importer in importers.get(&current).into_iter().flatten() {
+                if !distance.contains_key(importer) {
+                    distance.insert(*importer, next);
+                    queue.push_back(*importer);
+                }
+            }
+        }
+        distance.remove(&start);
+
+        let mut affected: Vec<ImpactedFile> = distance
+            .into_iter()
+            .filter_map(|(id, distance)| {
+                Some(ImpactedFile {
+                    file: self.file_path(id)?.to_string_lossy().into_owned(),
+                    distance,
+                })
+            })
+            .collect();
+        affected.sort_by(|a, b| (a.distance, &a.file).cmp(&(b.distance, &b.file)));
+
+        Some(Impact {
+            file: file.to_string(),
+            direct_count: affected.iter().filter(|a| a.distance == 1).count(),
+            total_count: affected.len(),
+            affected,
+        })
+    }
+
+    fn find_symbol(&self, name: &str) -> Vec<SymbolRef> {
+        let needle = name.to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut matches: Vec<(bool, SymbolRef)> = self
+            .symbols
+            .iter()
+            .filter_map(|s| {
+                let lower = s.name.to_lowercase();
+                lower
+                    .contains(&needle)
+                    .then(|| (lower != needle, self.symbol_ref(s)))
+            })
+            .collect();
+        // Exact matches first, then by name/file/line for determinism.
+        matches.sort_by(|(a_partial, a), (b_partial, b)| {
+            (a_partial, &a.name, &a.file, a.line).cmp(&(b_partial, &b.name, &b.file, b.line))
+        });
+        matches
+            .into_iter()
+            .take(MAX_SYMBOL_MATCHES)
+            .map(|(_, symbol)| symbol)
+            .collect()
+    }
+
+    fn symbol_calls(&self, name: &str, file: Option<&str>) -> Vec<SymbolCalls> {
+        let in_file = file.map(|f| self.file_id(Path::new(f)));
+        let by_id: HashMap<SymbolId, &Symbol> = self.symbols.iter().map(|s| (s.id, s)).collect();
+        let call_ref = |id: &SymbolId, confidence: EdgeConfidence| {
+            by_id.get(id).map(|s| CallRef {
+                symbol: self.symbol_ref(s),
+                confidence,
+            })
+        };
+        let sorted = |mut refs: Vec<CallRef>| {
+            refs.sort_by(|a, b| {
+                (&a.symbol.file, a.symbol.line, &a.symbol.name).cmp(&(
+                    &b.symbol.file,
+                    b.symbol.line,
+                    &b.symbol.name,
+                ))
+            });
+            refs
+        };
+
+        let mut result: Vec<SymbolCalls> = self
+            .symbols
+            .iter()
+            .filter(|s| s.name == name)
+            .filter(|s| in_file.is_none_or(|wanted| wanted == Some(s.file)))
+            .map(|s| SymbolCalls {
+                symbol: self.symbol_ref(s),
+                callers: sorted(
+                    self.calls
+                        .iter()
+                        .filter(|(_, to, _)| *to == s.id)
+                        .filter_map(|(from, _, confidence)| call_ref(from, *confidence))
+                        .collect(),
+                ),
+                callees: sorted(
+                    self.calls
+                        .iter()
+                        .filter(|(from, _, _)| *from == s.id)
+                        .filter_map(|(_, to, confidence)| call_ref(to, *confidence))
+                        .collect(),
+                ),
+            })
+            .collect();
+        result
+            .sort_by(|a, b| (&a.symbol.file, a.symbol.line).cmp(&(&b.symbol.file, b.symbol.line)));
+        result
+    }
 }
 
 impl Graph {
+    fn symbol_ref(&self, symbol: &Symbol) -> SymbolRef {
+        SymbolRef {
+            name: symbol.name.clone(),
+            kind: symbol.kind,
+            file: self
+                .file_path(symbol.file)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            line: symbol.span.start_row + 1,
+        }
+    }
+
     /// Per-language file counts, sorted by count desc then language id asc. Shared by
     /// [`overview`](MapQuery::overview) and [`graph_stats`](MapQuery::graph_stats).
     fn language_stats(&self) -> Vec<LanguageStat> {
@@ -2034,5 +2224,106 @@ mod tests {
             &[("a.rs", "b.rs"), ("selfish.rs", "selfish.rs")],
         );
         assert_eq!(g.isolated_files(), vec!["lonely.rs"]);
+    }
+
+    #[test]
+    fn impact_lists_transitive_dependents_nearest_first() {
+        // d -> c -> a, b -> a, and an unrelated e. A diamond (d also imports b) must keep the
+        // *shortest* distance, and a cycle (a -> d) must not loop or list `a` itself.
+        let g = graph_with_edges(
+            &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"],
+            &[
+                ("b.rs", "a.rs"),
+                ("c.rs", "a.rs"),
+                ("d.rs", "c.rs"),
+                ("d.rs", "b.rs"),
+                ("a.rs", "d.rs"),
+            ],
+        );
+
+        let impact = g.impact("a.rs").expect("a.rs is mapped");
+        assert_eq!(impact.direct_count, 2);
+        assert_eq!(impact.total_count, 3);
+        let affected: Vec<(&str, usize)> = impact
+            .affected
+            .iter()
+            .map(|a| (a.file.as_str(), a.distance))
+            .collect();
+        assert_eq!(affected, [("b.rs", 1), ("c.rs", 1), ("d.rs", 2)]);
+
+        assert_eq!(g.impact("e.rs").expect("mapped").total_count, 0);
+        assert!(g.impact("missing.rs").is_none());
+    }
+
+    /// Two files with a small call graph: `run` calls `helper` (same file, resolved) and
+    /// `format` (other file, heuristic). `helper` is also defined in b.rs, uncalled.
+    fn call_graph() -> Graph {
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        let a = g.add_file(PathBuf::from("a.rs"), rs.clone(), 0);
+        let b = g.add_file(PathBuf::from("b.rs"), rs, 0);
+        let at = |row: usize| Span {
+            start_byte: 0,
+            end_byte: 0,
+            start_row: row,
+            start_col: 0,
+        };
+        let run = g.add_symbol("run".to_string(), SymbolKind::Function, a, at(0));
+        let helper = g.add_symbol("helper".to_string(), SymbolKind::Function, a, at(4));
+        let format = g.add_symbol("format".to_string(), SymbolKind::Function, b, at(0));
+        g.add_symbol("helper".to_string(), SymbolKind::Function, b, at(9));
+        g.add_symbol("Formatter".to_string(), SymbolKind::Struct, b, at(20));
+        g.add_call(run, helper, EdgeConfidence::Resolved);
+        g.add_call(run, format, EdgeConfidence::Heuristic);
+        g
+    }
+
+    #[test]
+    fn find_symbol_puts_exact_matches_before_partial_ones() {
+        let g = call_graph();
+        let found: Vec<(String, String, usize)> = g
+            .find_symbol("FORMAT")
+            .into_iter()
+            .map(|s| (s.name, s.file, s.line))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("format".to_string(), "b.rs".to_string(), 1),
+                ("Formatter".to_string(), "b.rs".to_string(), 21),
+            ]
+        );
+        assert!(g.find_symbol("").is_empty());
+        assert!(g.find_symbol("nope").is_empty());
+    }
+
+    #[test]
+    fn symbol_calls_reports_callers_and_callees_with_confidence() {
+        let g = call_graph();
+
+        let run = &g.symbol_calls("run", None)[0];
+        assert!(run.callers.is_empty());
+        let callees: Vec<(&str, &str, EdgeConfidence)> = run
+            .callees
+            .iter()
+            .map(|c| (c.symbol.name.as_str(), c.symbol.file.as_str(), c.confidence))
+            .collect();
+        assert_eq!(
+            callees,
+            [
+                ("helper", "a.rs", EdgeConfidence::Resolved),
+                ("format", "b.rs", EdgeConfidence::Heuristic),
+            ]
+        );
+
+        // Both `helper`s are reported; only a.rs's has a caller. `file` narrows to one.
+        let helpers = g.symbol_calls("helper", None);
+        assert_eq!(helpers.len(), 2);
+        assert_eq!(helpers[0].callers.len(), 1);
+        assert!(helpers[1].callers.is_empty());
+        let only_b = g.symbol_calls("helper", Some("b.rs"));
+        assert_eq!(only_b.len(), 1);
+        assert_eq!(only_b[0].symbol.file, "b.rs");
+        assert!(g.symbol_calls("helper", Some("missing.rs")).is_empty());
     }
 }
