@@ -1,6 +1,76 @@
 {
   "todo": [
     {
+      "title": "Release 0.8.0 (C++ + R)",
+      "desc": "Bump workspace version, tag v0.8.0, let the release workflow publish binaries.",
+      "tags": [
+        {
+          "t": "release",
+          "kind": "area"
+        },
+        {
+          "t": "high",
+          "kind": "high"
+        }
+      ]
+    },
+    {
+      "title": "Call graph beyond Rust: TypeScript/JS first",
+      "desc": "Emit RawCall from compass-lang-typescript (plain calls attributed to the enclosing function) as the pattern-setter, then roll out to Python, Go, Java, C#.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "high",
+          "kind": "high"
+        }
+      ]
+    },
+    {
+      "title": "MCP tools: impact, find_symbol/callers, supported_languages",
+      "desc": "Transitive 'what breaks if I change this?' (E2), symbol lookup + callers/callees, and the H2 supported-languages tool; feed impact into guard/context.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        },
+        {
+          "t": "medium",
+          "kind": "medium"
+        }
+      ]
+    },
+    {
+      "title": "Split compass-cli main.rs into per-command modules",
+      "desc": "main.rs is ~1.7k lines with hand-rolled arg parsing; split before adding more commands.",
+      "tags": [
+        {
+          "t": "subsystem",
+          "kind": "area"
+        },
+        {
+          "t": "medium",
+          "kind": "medium"
+        }
+      ]
+    },
+    {
+      "title": "HTML/CSS extractor",
+      "desc": "In-scope web-assets extractor from ProjectInfo: link/script/a references and CSS class/ID usage as reference edges.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "low",
+          "kind": "low"
+        }
+      ]
+    },
+    {
       "title": "Evaluate Swift and Scala extractors",
       "desc": "Runner-up languages for coverage: Swift (mobile, pairs with Kotlin) and Scala (JVM).",
       "tags": [
@@ -91,6 +161,20 @@
     {
       "title": "Add C++ language extractor (compass-lang-cpp)",
       "desc": "Recommended next language. tree-sitter-cpp grammar; reuse C's quoted-#include resolver; handle namespaces/classes.",
+      "tags": [
+        {
+          "t": "language",
+          "kind": "area"
+        },
+        {
+          "t": "high",
+          "kind": "high"
+        }
+      ]
+    },
+    {
+      "title": "Add R language extractor (compass-lang-r)",
+      "desc": "tree-sitter-r grammar; functions, R6/S4/RefClass classes + methods, S4 generics, plain calls; source()/sys.source()/here::here() resolution (repo root, then the sourcing file's dir).",
       "tags": [
         {
           "t": "language",
