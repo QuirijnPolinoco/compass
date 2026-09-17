@@ -1329,7 +1329,12 @@ fn run_serve(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let query: std::sync::Arc<dyn MapQuery + Send + Sync> = std::sync::Arc::new(graph);
-    if let Err(e) = compass_mcp::serve_stdio(query) {
+    let supported_languages = registry::register_all()
+        .language_ids()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    if let Err(e) = compass_mcp::serve_stdio(query, supported_languages) {
         eprintln!("compass: MCP server error: {e:#}");
         return ExitCode::FAILURE;
     }

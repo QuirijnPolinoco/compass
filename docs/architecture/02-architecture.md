@@ -331,12 +331,14 @@ optional workspace dependency and `lang-<name>` feature in `compass-cli` + one l
 - **Detection is registry-driven** for **both** extensions **and** shebang interpreter
   patterns: each `Extractor` declares `Detection { extensions, shebangs }`; `engine::walk`
   consumes the union and holds no per-language table.
-- **MCP tool surface:** shipping today — `overview`, `file_dependencies` (deps + dependents),
-  `broken_imports`. Adding per ADR-0005 — `subgraph` (the relevant slice around a file, so the
-  AI fetches a small cheap context instead of grepping — FR-11/C3) and `shortest_path` (the
-  import path between two files — FR-17/E1). A `supported_languages` tool is planned, derived
-  from the **same registry** the engine uses so it cannot drift from reality (FR-14/H2). DTOs
-  (`schemars`) own the wire schema in `compass-mcp`.
+- **MCP tool surface:** file-level — `overview`, `graph_stats`, `file_dependencies` (deps +
+  dependents), `subgraph` (the relevant slice around a file, so the AI fetches a small cheap
+  context instead of grepping — FR-11/C3), `shortest_path` (FR-17/E1), `impact` (transitive
+  dependents — FR-18/E2), `hubs`, `get_community`, `import_cycles`, `broken_imports`,
+  `isolated_files`; symbol-level — `find_symbol` and `symbol_calls` (callers/callees).
+  `supported_languages` is fed from the **same registry** the engine uses, handed in by the
+  composition root, so it cannot drift from reality (FR-14/H2) and `compass-mcp` still never
+  sees the registry. DTOs (`schemars`) own the wire schema in `compass-mcp`.
 - **Visualization surface (ADR-0005):** `compass-viz` consumes the same query port — `graph_view`
   for the full picture and `subgraph` for focus mode — and owns its **Cytoscape element JSON** as
   its render schema (the browser analogue of `compass-mcp`'s wire DTOs). It binds `127.0.0.1`
