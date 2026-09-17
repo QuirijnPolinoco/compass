@@ -1,15 +1,15 @@
 //! `compass-lang-go` — the Go language extractor.
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait: detection, the
-//! tree-sitter-go grammar, per-file symbol/import extraction, and Go's whole-repo import
-//! resolution. It depends only on `compass-extract` + `compass-core` (ADR-0002).
+//! tree-sitter-go grammar, per-file symbol/import/plain-call extraction, and Go's whole-repo
+//! import resolution. It depends only on `compass-extract` + `compass-core` (ADR-0002).
 
 use std::path::{Path, PathBuf};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -35,11 +35,18 @@ impl Extractor for GoExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -197,39 +204,146 @@ fn local_replacement_dir(target: &str) -> Option<String> {
         .then(|| rel.trim_end_matches('/').to_string())
 }
 
-/// Recursively pull symbols and import specifiers from the parse tree.
-fn visit(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>, imports: &mut Vec<RawImport>) {
-    match node.kind() {
-        "function_declaration" => push_named(node, "name", SymbolKind::Function, src, symbols),
-        "method_declaration" => push_named(node, "name", SymbolKind::Method, src, symbols),
-        "type_spec" => {
-            let kind = match node.child_by_field_name("type").map(|n| n.kind()) {
-                Some("struct_type") => SymbolKind::Struct,
-                Some("interface_type") => SymbolKind::Interface,
-                _ => SymbolKind::Other,
-            };
-            push_named(node, "name", kind, src, symbols);
-        }
-        "import_spec" => {
-            if let Some(path) = node.child_by_field_name("path") {
-                if let Ok(text) = path.utf8_text(src) {
-                    imports.push(RawImport {
-                        specifier: text.trim_matches('"').to_string(),
-                        span: span_of(path),
-                    });
+/// What a subtree is nested in. `current_fn` is the `symbols` index of the enclosing
+/// function/method, to which calls are attributed (`None` at package scope). `receiver` is
+/// the enclosing method's receiver name (`s` in `func (s *Svc) Run()`), so `s.prep()` can be
+/// told apart from a call on an arbitrary value.
+#[derive(Default)]
+struct Scope {
+    current_fn: Option<usize>,
+    receiver: Option<String>,
+}
+
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            "function_declaration" => {
+                return self.enter_function(node, SymbolKind::Function, None, scope);
+            }
+            "method_declaration" => {
+                return self.enter_function(
+                    node,
+                    SymbolKind::Method,
+                    receiver_name(node, self.src),
+                    scope,
+                );
+            }
+            "type_spec" => {
+                let kind = match node.child_by_field_name("type").map(|n| n.kind()) {
+                    Some("struct_type") => SymbolKind::Struct,
+                    Some("interface_type") => SymbolKind::Interface,
+                    _ => SymbolKind::Other,
+                };
+                push_named(node, "name", kind, self.src, self.symbols);
+            }
+            "import_spec" => {
+                if let Some(path) = node.child_by_field_name("path") {
+                    if let Ok(text) = path.utf8_text(self.src) {
+                        self.imports.push(RawImport {
+                            specifier: text.trim_matches('"').to_string(),
+                            span: span_of(path),
+                        });
+                    }
                 }
             }
+            "call_expression" => {
+                let callee = node
+                    .child_by_field_name("function")
+                    .and_then(|f| callee_name(f, scope, self.src));
+                self.push_call(node, callee, scope);
+            }
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, scope);
     }
 
+    /// Push the function's symbol, then walk its body with that symbol as the caller (if it
+    /// got a symbol at all — otherwise keep the parent as caller).
+    fn enter_function(
+        &mut self,
+        node: Node,
+        kind: SymbolKind,
+        receiver: Option<String>,
+        scope: &Scope,
+    ) {
+        let idx = self.symbols.len();
+        push_named(node, "name", kind, self.src, self.symbols);
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(
+            node,
+            &Scope {
+                current_fn,
+                receiver,
+            },
+        );
+    }
+
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
+        }
+    }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+}
+
+/// The name bound to a method's receiver: `s` in `func (s *Svc) Run()`.
+fn receiver_name(method: Node, src: &[u8]) -> Option<String> {
+    let receiver = method.child_by_field_name("receiver")?;
     let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, symbols, imports);
+    while i < receiver.child_count() {
+        if let Some(param) = receiver.child(i as u32) {
+            if let Some(name) = param.child_by_field_name("name") {
+                return Some(name.utf8_text(src).ok()?.to_string());
+            }
         }
         i += 1;
     }
+    None
+}
+
+/// The callee name when it can be named without type information: a bare identifier
+/// (`helper()`) or a method on the enclosing method's own receiver (`s.prep()`). Any other
+/// selector (`fmt.Println()`, `x.Do()`) needs package/type resolution we don't do, so it's left
+/// for the engine to never see rather than guessed at.
+fn callee_name(function: Node, scope: &Scope, src: &[u8]) -> Option<String> {
+    let name = match function.kind() {
+        "identifier" => function,
+        "selector_expression" => {
+            let operand = function.child_by_field_name("operand")?;
+            let receiver = scope.receiver.as_deref()?;
+            if operand.kind() != "identifier" || operand.utf8_text(src) != Ok(receiver) {
+                return None;
+            }
+            function.child_by_field_name("field")?
+        }
+        _ => return None,
+    };
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 fn push_named(
@@ -467,5 +581,41 @@ func main() {
             Some(PathBuf::from("util"))
         );
         assert_eq!(internal_subpath("example.com/demo", "fmt"), None);
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Plain `helper()` and receiver calls `s.prep()` are captured; `fmt.Println()` /
+        // `other.Do()` (package or unknown receivers) and package-scope calls are not.
+        let src = r#"
+package m
+
+var ready = helper()
+
+func helper() int { return 1 }
+
+func (s *Svc) Run(other *Svc) {
+	s.prep()
+	other.prep()
+	fmt.Println(helper())
+	go func() { s.stop() }()
+}
+
+func (s *Svc) prep() {}
+func (s *Svc) stop() {}
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> = [("Run", "helper"), ("Run", "prep"), ("Run", "stop")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(got, want);
     }
 }
