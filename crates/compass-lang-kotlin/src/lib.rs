@@ -2,7 +2,8 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection (.kt/.kts), the `tree-sitter-kotlin-ng` grammar, symbol extraction (classes,
-//! interfaces, enums, objects, functions/methods), and package-aware import resolution.
+//! interfaces, enums, objects, functions/methods), plain-call capture, and package-aware import
+//! resolution.
 //!
 //! Kotlin doesn't require a file's name to match its classes, so import resolution is a
 //! best-effort convention (package mirrors folder; `import a.b.C` -> `a/b/C.kt` under the
@@ -12,8 +13,8 @@ use std::path::Path;
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -39,11 +40,18 @@ impl Extractor for KotlinExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, false, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -126,87 +134,163 @@ fn read_package(repo_root: &Path, rel: &Path) -> Option<String> {
     None
 }
 
-fn visit(
-    node: Node,
-    src: &[u8],
+/// What a subtree is nested in. `in_class` is true directly inside a class-like body, where a
+/// function is a method. `current_fn` is the `symbols` index of the enclosing function/method,
+/// to which calls are attributed (`None` outside any).
+#[derive(Default, Clone, Copy)]
+struct Scope {
     in_class: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    match node.kind() {
-        "class_declaration" => {
-            // `class` / `interface` / `enum class` all parse as class_declaration; the
-            // leading keyword (the text before the name) tells them apart.
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let prefix = std::str::from_utf8(&src[node.start_byte()..name_node.start_byte()])
-                    .unwrap_or("");
-                let kind = if prefix.contains("interface") {
-                    SymbolKind::Interface
-                } else if prefix.contains("enum") {
-                    SymbolKind::Enum
-                } else {
-                    SymbolKind::Class
-                };
-                if let Ok(name) = name_node.utf8_text(src) {
-                    symbols.push(ExtractedSymbol {
-                        name: name.to_string(),
-                        kind,
-                        span: span_of(name_node),
-                    });
-                }
-            }
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "object_declaration" => {
-            push_named(node, "name", SymbolKind::Class, src, symbols);
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "function_declaration" => {
-            let kind = if in_class {
-                SymbolKind::Method
-            } else {
-                SymbolKind::Function
-            };
-            push_named(node, "name", kind, src, symbols);
-            recurse(node, src, false, symbols, imports);
-            return;
-        }
-        "import" => {
-            if let Some(qi) = first_child_of_kind(node, "qualified_identifier") {
-                if let Ok(path) = qi.utf8_text(src) {
-                    let specifier = if has_child_kind(node, "*") {
-                        format!("{path}.*")
-                    } else {
-                        path.to_string()
-                    };
-                    imports.push(RawImport {
-                        specifier,
-                        span: span_of(node),
-                    });
-                }
-            }
-        }
-        _ => {}
-    }
-    recurse(node, src, in_class, symbols, imports);
+    current_fn: Option<usize>,
 }
 
-fn recurse(
-    node: Node,
-    src: &[u8],
-    in_class: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, in_class, symbols, imports);
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            "class_declaration" => {
+                // `class` / `interface` / `enum class` all parse as class_declaration; the
+                // leading keyword (the text before the name) tells them apart.
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let prefix =
+                        std::str::from_utf8(&self.src[node.start_byte()..name_node.start_byte()])
+                            .unwrap_or("");
+                    let kind = if prefix.contains("interface") {
+                        SymbolKind::Interface
+                    } else if prefix.contains("enum") {
+                        SymbolKind::Enum
+                    } else {
+                        SymbolKind::Class
+                    };
+                    if let Ok(name) = name_node.utf8_text(self.src) {
+                        self.symbols.push(ExtractedSymbol {
+                            name: name.to_string(),
+                            kind,
+                            span: span_of(name_node),
+                        });
+                    }
+                }
+                self.recurse(
+                    node,
+                    &Scope {
+                        in_class: true,
+                        ..*scope
+                    },
+                );
+                return;
+            }
+            "object_declaration" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols);
+                self.recurse(
+                    node,
+                    &Scope {
+                        in_class: true,
+                        ..*scope
+                    },
+                );
+                return;
+            }
+            "function_declaration" => {
+                let kind = if scope.in_class {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                };
+                return self.enter_function(node, kind, scope);
+            }
+            "import" => {
+                if let Some(qi) = first_child_of_kind(node, "qualified_identifier") {
+                    if let Ok(path) = qi.utf8_text(self.src) {
+                        let specifier = if has_child_kind(node, "*") {
+                            format!("{path}.*")
+                        } else {
+                            path.to_string()
+                        };
+                        self.imports.push(RawImport {
+                            specifier,
+                            span: span_of(node),
+                        });
+                    }
+                }
+            }
+            "call_expression" => {
+                let callee = node.child(0).and_then(|f| callee_name(f, self.src));
+                self.push_call(node, callee, scope);
+            }
+            _ => {}
         }
-        i += 1;
+        self.recurse(node, scope);
     }
+
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
+        }
+    }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+
+    /// Push the function's symbol, then walk its body with that symbol as the caller (if it
+    /// got a symbol at all — otherwise keep the parent as caller). A function body's own
+    /// definitions are plain functions, not methods.
+    fn enter_function(&mut self, node: Node, kind: SymbolKind, scope: &Scope) {
+        let idx = self.symbols.len();
+        push_named(node, "name", kind, self.src, self.symbols);
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(
+            node,
+            &Scope {
+                in_class: false,
+                current_fn,
+            },
+        );
+    }
+}
+
+/// The callee name when it can be named without type information: a bare name (`helper()`,
+/// which also covers construction `Helper()`) or a method on `this`. Calls on any other
+/// receiver (`other.go()`, `Util.stat()`) need type resolution we don't do, so they're left for
+/// the engine to never see rather than guessed at.
+fn callee_name(function: Node, src: &[u8]) -> Option<String> {
+    let name = match function.kind() {
+        "identifier" => function,
+        "navigation_expression" => {
+            if function.child(0)?.kind() != "this_expression" {
+                return None;
+            }
+            // `this.prepare` -> [this_expression, ".", identifier]; the member is the last child.
+            let last = function.child_count().checked_sub(1)?;
+            let member = function.child(last as u32)?;
+            if member.kind() != "identifier" {
+                return None;
+            }
+            member
+        }
+        _ => return None,
+    };
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 fn has_child_kind(node: Node, kind: &str) -> bool {
@@ -444,5 +528,40 @@ fun helper() {}
     fn source_root_strips_package() {
         assert_eq!(source_root("src/com/example/app", "com.example.app"), "src");
         assert_eq!(source_root("foo", ""), "foo");
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Bare calls (incl. construction `Worker()`) and `this.` calls are captured; calls on
+        // other receivers (`other.prepare()`, `Util.stat()`) are not.
+        let src = r#"
+fun helper() {}
+
+class Service {
+    fun run(other: Service) {
+        this.prepare()
+        helper()
+        other.prepare()
+        Util.stat()
+        val w = Worker()
+    }
+
+    fun prepare() {}
+}
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> =
+            [("run", "Worker"), ("run", "helper"), ("run", "prepare")]
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect();
+        assert_eq!(got, want);
     }
 }

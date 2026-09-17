@@ -7,6 +7,11 @@ contain breaking changes).
 
 ## [Unreleased]
 
+### Added
+
+- Call edges from the Kotlin, Ruby, PHP, C and C++ extractors — every supported language now
+  contributes to the call graph.
+
 ### Changed
 
 - `compass context` and `compass guard` now report a file's **transitive** blast radius (every

@@ -2,7 +2,8 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection (.cpp/.cc/.cxx/.hpp/.hh/.hxx), the tree-sitter-cpp grammar, symbol extraction
-//! (functions, classes, structs, unions, enums, namespaces), and `#include` resolution.
+//! (functions, classes, structs, unions, enums, namespaces), plain-call capture, and `#include`
+//! resolution.
 //!
 //! In-repo file dependencies come from quoted includes (`#include "foo.hpp"`), resolved
 //! relative to the including file. Angle-bracket includes (`#include <vector>`) are
@@ -14,8 +15,8 @@ use std::path::Path;
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -42,11 +43,18 @@ impl Extractor for CppExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -104,62 +112,141 @@ fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn visit(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>, imports: &mut Vec<RawImport>) {
-    match node.kind() {
-        // Only count definitions (those with a body), not forward declarations / type references.
-        "struct_specifier" | "union_specifier" => {
-            if node.child_by_field_name("body").is_some() {
-                push_named(node, "name", SymbolKind::Struct, src, symbols);
-            }
-        }
-        "class_specifier" => {
-            if node.child_by_field_name("body").is_some() {
-                push_named(node, "name", SymbolKind::Class, src, symbols);
-            }
-        }
-        "enum_specifier" => {
-            if node.child_by_field_name("body").is_some() {
-                push_named(node, "name", SymbolKind::Enum, src, symbols);
-            }
-        }
-        // A named namespace is a module-like grouping; anonymous namespaces have no name field.
-        "namespace_definition" => {
-            push_named(node, "name", SymbolKind::Module, src, symbols);
-        }
-        "function_definition" => {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = declarator_name(declarator, src) {
-                    symbols.push(ExtractedSymbol {
-                        name,
-                        kind: SymbolKind::Function,
-                        span: span_of(declarator),
-                    });
+/// What a subtree is nested in. `current_fn` is the `symbols` index of the enclosing
+/// function, to which calls are attributed (`None` outside any).
+#[derive(Default)]
+struct Scope {
+    current_fn: Option<usize>,
+}
+
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            // Only count definitions (those with a body), not forward declarations / type references.
+            "struct_specifier" | "union_specifier" => {
+                if node.child_by_field_name("body").is_some() {
+                    push_named(node, "name", SymbolKind::Struct, self.src, self.symbols);
                 }
             }
-        }
-        "preproc_include" => {
-            if let Some(path) = node.child_by_field_name("path") {
-                // `"foo.hpp"` is a local include; `<vector>` (system_lib_string) is external.
-                if path.kind() == "string_literal" {
-                    if let Ok(text) = path.utf8_text(src) {
-                        imports.push(RawImport {
-                            specifier: text.trim_matches('"').to_string(),
-                            span: span_of(node),
-                        });
+            "class_specifier" => {
+                if node.child_by_field_name("body").is_some() {
+                    push_named(node, "name", SymbolKind::Class, self.src, self.symbols);
+                }
+            }
+            "enum_specifier" => {
+                if node.child_by_field_name("body").is_some() {
+                    push_named(node, "name", SymbolKind::Enum, self.src, self.symbols);
+                }
+            }
+            // A named namespace is a module-like grouping; anonymous namespaces have no name field.
+            "namespace_definition" => {
+                push_named(node, "name", SymbolKind::Module, self.src, self.symbols);
+            }
+            "function_definition" => return self.enter_function(node, scope),
+            "preproc_include" => {
+                if let Some(path) = node.child_by_field_name("path") {
+                    // `"foo.hpp"` is a local include; `<vector>` (system_lib_string) is external.
+                    if path.kind() == "string_literal" {
+                        if let Ok(text) = path.utf8_text(self.src) {
+                            self.imports.push(RawImport {
+                                specifier: text.trim_matches('"').to_string(),
+                                span: span_of(node),
+                            });
+                        }
                     }
                 }
             }
+            "call_expression" => {
+                let callee = node
+                    .child_by_field_name("function")
+                    .and_then(|f| callee_name(f, self.src));
+                self.push_call(node, callee, scope);
+            }
+            // `new Helper()` — a call to the class (its constructor).
+            "new_expression" => {
+                let callee = node
+                    .child_by_field_name("type")
+                    .filter(|t| t.kind() == "type_identifier")
+                    .and_then(|t| t.utf8_text(self.src).ok())
+                    .map(str::to_string);
+                self.push_call(node, callee, scope);
+            }
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, scope);
     }
 
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, symbols, imports);
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
         }
-        i += 1;
     }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+
+    /// Push the function's symbol (named by its declarator), then walk its body with that
+    /// symbol as the caller (if it got a symbol at all — otherwise keep the parent as caller).
+    fn enter_function(&mut self, node: Node, scope: &Scope) {
+        let idx = self.symbols.len();
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(name) = declarator_name(declarator, self.src) {
+                self.symbols.push(ExtractedSymbol {
+                    name,
+                    kind: SymbolKind::Function,
+                    span: span_of(declarator),
+                });
+            }
+        }
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(node, &Scope { current_fn });
+    }
+}
+
+/// The callee name when it can be named without type information: a bare identifier
+/// (`helper()`), a function template (`make<int>()`), or a method on `this`. Calls on any other
+/// receiver (`o->go()`) or through a qualifier (`ns::util()`, `A::stat()`) need type/namespace
+/// resolution we don't do, so they're left for the engine to never see rather than guessed at.
+fn callee_name(function: Node, src: &[u8]) -> Option<String> {
+    let name = match function.kind() {
+        "identifier" => function,
+        "template_function" => function.child_by_field_name("name")?,
+        "field_expression" => {
+            let receiver = function.child_by_field_name("argument")?;
+            if receiver.kind() != "this" {
+                return None;
+            }
+            function.child_by_field_name("field")?
+        }
+        _ => return None,
+    };
+    if !matches!(name.kind(), "identifier" | "field_identifier") {
+        return None;
+    }
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 /// Descend a C++ declarator (through pointer/reference/array/function wrappers and the
@@ -379,5 +466,43 @@ int geo::Shape::area() {
         assert_eq!(resolve_path("src/a", "../util.hpp"), "src/util.hpp");
         assert_eq!(resolve_path("", "util.hpp"), "util.hpp");
         assert_eq!(resolve_path("src", "./util.hpp"), "src/util.hpp");
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Bare calls, function templates, `this->` calls and `new Type()` are captured; calls
+        // on other receivers or through a qualifier (`ns::util()`) are not.
+        let src = r#"
+void helper() {}
+
+void Service::run(Service* other) {
+    this->prepare();
+    helper();
+    other->prepare();
+    ns::util();
+    make<int>(3);
+    auto w = new Worker();
+}
+
+void Service::prepare() {}
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> = [
+            ("run", "Worker"),
+            ("run", "helper"),
+            ("run", "make"),
+            ("run", "prepare"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(got, want);
     }
 }

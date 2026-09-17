@@ -2,7 +2,7 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection (.rb + shebang), the tree-sitter-ruby grammar, symbol extraction (classes,
-//! modules, methods), and `require_relative` resolution.
+//! modules, methods), plain-call capture, and `require_relative` resolution.
 //!
 //! In-repo file dependencies come from `require_relative` (resolved to a `.rb` file
 //! relative to the current file). Plain `require` targets gems / the stdlib, so it is
@@ -12,8 +12,8 @@ use std::path::Path;
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -39,11 +39,18 @@ impl Extractor for RubyExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, false, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -107,70 +114,135 @@ fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn visit(
-    node: Node,
-    src: &[u8],
+/// What a subtree is nested in. `in_class` is true directly inside a class-like body, where a
+/// function is a method. `current_fn` is the `symbols` index of the enclosing function/method,
+/// to which calls are attributed (`None` outside any).
+#[derive(Default, Clone, Copy)]
+struct Scope {
     in_class: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    match node.kind() {
-        "class" => {
-            push_named(node, "name", SymbolKind::Class, src, symbols);
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "module" => {
-            push_named(node, "name", SymbolKind::Module, src, symbols);
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "method" => {
-            let kind = if in_class {
-                SymbolKind::Method
-            } else {
-                SymbolKind::Function
-            };
-            push_named(node, "name", kind, src, symbols);
-            recurse(node, src, false, symbols, imports);
-            return;
-        }
-        "singleton_method" => {
-            push_named(node, "name", SymbolKind::Method, src, symbols);
-            recurse(node, src, false, symbols, imports);
-            return;
-        }
-        "call" => {
-            if let Some(method) = node.child_by_field_name("method") {
-                if method.utf8_text(src) == Ok("require_relative") {
-                    if let Some(spec) = first_string_arg(node, src) {
-                        imports.push(RawImport {
+    current_fn: Option<usize>,
+}
+
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            "class" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols);
+                self.recurse(
+                    node,
+                    &Scope {
+                        in_class: true,
+                        ..*scope
+                    },
+                );
+                return;
+            }
+            "module" => {
+                push_named(node, "name", SymbolKind::Module, self.src, self.symbols);
+                self.recurse(
+                    node,
+                    &Scope {
+                        in_class: true,
+                        ..*scope
+                    },
+                );
+                return;
+            }
+            "method" => {
+                let kind = if scope.in_class {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                };
+                return self.enter_function(node, kind, scope);
+            }
+            "singleton_method" => return self.enter_function(node, SymbolKind::Method, scope),
+            "call" => {
+                let method = node.child_by_field_name("method");
+                if method.and_then(|m| m.utf8_text(self.src).ok()) == Some("require_relative") {
+                    if let Some(spec) = first_string_arg(node, self.src) {
+                        self.imports.push(RawImport {
                             specifier: spec,
                             span: span_of(node),
                         });
                     }
+                } else {
+                    let callee = callee_name(node, self.src);
+                    self.push_call(node, callee, scope);
                 }
             }
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, scope);
     }
-    recurse(node, src, in_class, symbols, imports);
+
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
+        }
+    }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+
+    /// Push the function's symbol, then walk its body with that symbol as the caller (if it
+    /// got a symbol at all — otherwise keep the parent as caller). A function body's own
+    /// definitions are plain functions, not methods.
+    fn enter_function(&mut self, node: Node, kind: SymbolKind, scope: &Scope) {
+        let idx = self.symbols.len();
+        push_named(node, "name", kind, self.src, self.symbols);
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(
+            node,
+            &Scope {
+                in_class: false,
+                current_fn,
+            },
+        );
+    }
 }
 
-fn recurse(
-    node: Node,
-    src: &[u8],
-    in_class: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, in_class, symbols, imports);
+/// The callee name when it can be named without type information: a receiver-less call
+/// (`helper(1)`), a method on `self`, or `Const.new` (-> the class). A bare identifier without
+/// arguments is not a `call` node at all (it may be a local variable), and calls on any other
+/// receiver (`other.go`) need type resolution we don't do, so neither is guessed at.
+fn callee_name(call: Node, src: &[u8]) -> Option<String> {
+    let method = call.child_by_field_name("method")?;
+    let name = match call.child_by_field_name("receiver") {
+        None => method,
+        Some(receiver) if receiver.kind() == "self" => method,
+        Some(receiver) if receiver.kind() == "constant" && method.utf8_text(src) == Ok("new") => {
+            receiver
         }
-        i += 1;
+        Some(_) => return None,
+    };
+    if !matches!(name.kind(), "identifier" | "constant") {
+        return None;
     }
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 /// The first string literal in a call's `arguments`, with quotes stripped.
@@ -404,5 +476,44 @@ end
         assert_eq!(resolve_path("a/b", "./util"), "a/b/util");
         assert_eq!(resolve_path("", "util"), "util");
         assert_eq!(resolve_path("a", "../../util"), "util");
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Receiver-less calls, `self.` calls and `Const.new` are captured; calls on other
+        // receivers (`other.prepare`) and top-level calls are not.
+        let src = r#"
+def helper(x)
+  x
+end
+
+class Service
+  def run(other)
+    self.prepare
+    helper(1)
+    other.prepare
+    Worker.new(2)
+  end
+
+  def prepare
+  end
+end
+
+helper(0)
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> =
+            [("run", "Worker"), ("run", "helper"), ("run", "prepare")]
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect();
+        assert_eq!(got, want);
     }
 }
