@@ -2,8 +2,9 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection (.ts/.tsx/.js/.jsx/.mts/.cts/.mjs/.cjs), the tree-sitter TSX grammar (a
-//! superset that parses TS, JS, and JSX), symbol extraction (functions, classes,
-//! interfaces, enums, methods), and relative-import resolution.
+//! superset that parses TS, JS, and JSX), symbol extraction (functions — declared or bound to
+//! a `const` — classes, interfaces, enums, methods), plain-call capture, and relative-import
+//! resolution.
 //!
 //! Bare specifiers (`react`) are external (node_modules) — unless a nearest-`tsconfig.json`
 //! `paths`/`baseUrl` alias (e.g. `@/* -> ./src/*`) maps them to a real file. Relative imports
@@ -18,8 +19,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -49,11 +50,18 @@ impl Extractor for TypeScriptExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), None);
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -344,63 +352,174 @@ fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn visit(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>, imports: &mut Vec<RawImport>) {
-    match node.kind() {
-        "function_declaration" | "generator_function_declaration" => {
-            push_named(node, "name", SymbolKind::Function, src, symbols)
-        }
-        "class_declaration" | "abstract_class_declaration" => {
-            push_named(node, "name", SymbolKind::Class, src, symbols)
-        }
-        "interface_declaration" => push_named(node, "name", SymbolKind::Interface, src, symbols),
-        "enum_declaration" => push_named(node, "name", SymbolKind::Enum, src, symbols),
-        "type_alias_declaration" => push_named(node, "name", SymbolKind::Other, src, symbols),
-        "method_definition" => push_named(node, "name", SymbolKind::Method, src, symbols),
-        "import_statement" | "export_statement" => {
-            // The module specifier is the `source` string child (absent for re-exports
-            // without `from`, and for plain `export { x }`).
-            if let Some(string) = first_child_of_kind(node, "string") {
-                if let Some(spec) = string_literal_text(string, src) {
-                    imports.push(RawImport {
-                        specifier: spec,
-                        span: span_of(string),
-                    });
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    /// `current_fn` is the `symbols` index of the enclosing function/method, to which calls in
+    /// this subtree are attributed (`None` at module scope — top-level calls aren't
+    /// attributable to a symbol).
+    fn visit(&mut self, node: Node, current_fn: Option<usize>) {
+        match node.kind() {
+            "function_declaration" | "generator_function_declaration" => {
+                return self.enter_function(node, node, SymbolKind::Function, current_fn);
+            }
+            "method_definition" => {
+                return self.enter_function(node, node, SymbolKind::Method, current_fn);
+            }
+            // `const greet = () => {..}` / `const greet = function () {..}` — how most modern
+            // TS/JS declares functions. The declarator names it; the value is the body.
+            "variable_declarator" => {
+                let value = node.child_by_field_name("value");
+                let is_function = value.is_some_and(|v| {
+                    matches!(
+                        v.kind(),
+                        "arrow_function" | "function_expression" | "generator_function"
+                    )
+                });
+                let named = node
+                    .child_by_field_name("name")
+                    .is_some_and(|n| n.kind() == "identifier");
+                if let (true, true, Some(body)) = (is_function, named, value) {
+                    return self.enter_function(node, body, SymbolKind::Function, current_fn);
                 }
             }
-        }
-        // `require("x")` (CommonJS) and dynamic `import("x")` — a call whose callee is the
-        // `require` identifier or the `import` keyword, with a string first argument.
-        "call_expression" => {
-            if let Some(callee) = node.child_by_field_name("function") {
-                let is_require = callee
-                    .utf8_text(src)
-                    .map(|t| t == "require")
-                    .unwrap_or(false);
-                if (is_require || callee.kind() == "import")
-                    && node.child_by_field_name("arguments").is_some()
-                {
-                    let args = node.child_by_field_name("arguments").unwrap();
-                    if let Some(string) = first_child_of_kind(args, "string") {
-                        if let Some(spec) = string_literal_text(string, src) {
-                            imports.push(RawImport {
-                                specifier: spec,
-                                span: span_of(string),
-                            });
-                        }
+            "class_declaration" | "abstract_class_declaration" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols)
+            }
+            "interface_declaration" => {
+                push_named(node, "name", SymbolKind::Interface, self.src, self.symbols)
+            }
+            "enum_declaration" => {
+                push_named(node, "name", SymbolKind::Enum, self.src, self.symbols)
+            }
+            "type_alias_declaration" => {
+                push_named(node, "name", SymbolKind::Other, self.src, self.symbols)
+            }
+            "import_statement" | "export_statement" => {
+                // The module specifier is the `source` string child (absent for re-exports
+                // without `from`, and for plain `export { x }`).
+                if let Some(string) = first_child_of_kind(node, "string") {
+                    if let Some(spec) = string_literal_text(string, self.src) {
+                        self.imports.push(RawImport {
+                            specifier: spec,
+                            span: span_of(string),
+                        });
                     }
                 }
             }
+            "call_expression" => {
+                if !self.push_module_load(node) {
+                    self.push_call(node, "function", current_fn);
+                }
+            }
+            // `new Greeter()` — a call to the class (its constructor).
+            "new_expression" => self.push_call(node, "constructor", current_fn),
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, current_fn);
     }
 
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, symbols, imports);
+    fn recurse(&mut self, node: Node, current_fn: Option<usize>) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, current_fn);
+            }
+            i += 1;
         }
-        i += 1;
     }
+
+    /// Push the symbol named by `decl`'s `name` field, then walk `body` with that symbol as
+    /// the caller (if it got a symbol at all — otherwise keep the parent as caller).
+    fn enter_function(
+        &mut self,
+        decl: Node,
+        body: Node,
+        kind: SymbolKind,
+        current_fn: Option<usize>,
+    ) {
+        let idx = self.symbols.len();
+        push_named(decl, "name", kind, self.src, self.symbols);
+        let caller = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            current_fn
+        };
+        self.recurse(body, caller);
+    }
+
+    /// `require("x")` (CommonJS) and dynamic `import("x")` — a call whose callee is the
+    /// `require` identifier or the `import` keyword, with a string first argument. Returns
+    /// whether `node` was such a module load (so it isn't also recorded as a call).
+    fn push_module_load(&mut self, node: Node) -> bool {
+        let Some(callee) = node.child_by_field_name("function") else {
+            return false;
+        };
+        let is_require = callee.utf8_text(self.src) == Ok("require");
+        if !is_require && callee.kind() != "import" {
+            return false;
+        }
+        let string = node
+            .child_by_field_name("arguments")
+            .and_then(|args| first_child_of_kind(args, "string"));
+        if let Some(string) = string {
+            if let Some(spec) = string_literal_text(string, self.src) {
+                self.imports.push(RawImport {
+                    specifier: spec,
+                    span: span_of(string),
+                });
+            }
+        }
+        true
+    }
+
+    fn push_call(&mut self, node: Node, callee_field: &str, current_fn: Option<usize>) {
+        let Some(caller) = current_fn else {
+            return;
+        };
+        let callee = node
+            .child_by_field_name(callee_field)
+            .and_then(|c| callee_name(c, self.src));
+        if let Some(callee) = callee {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+}
+
+/// The callee name when it can be named without type information: a bare identifier
+/// (`foo(..)`, `new Foo(..)`) or a method on `this` (`this.foo(..)`). Calls on any other
+/// receiver (`x.foo()`, `a.b.c()`) need type resolution we don't do, so they're left for the
+/// engine to never see rather than guessed at.
+fn callee_name(callee: Node, src: &[u8]) -> Option<String> {
+    let name = match callee.kind() {
+        "identifier" => callee,
+        "member_expression" => {
+            let object = callee.child_by_field_name("object")?;
+            if object.kind() != "this" {
+                return None;
+            }
+            let property = callee.child_by_field_name("property")?;
+            // `this.#secret()` is a `private_property_identifier`; its symbol is `#secret` too.
+            if !matches!(
+                property.kind(),
+                "property_identifier" | "private_property_identifier"
+            ) {
+                return None;
+            }
+            property
+        }
+        _ => return None,
+    };
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 fn first_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
@@ -677,5 +796,92 @@ function load() { return import("./dyn-mod"); }
         .expect("parses after stripping");
         assert_eq!(v["a"], 1);
         assert_eq!(v["b"][1], 2);
+    }
+
+    // Calls + const-bound functions:
+    //  - arrow / function-expression `const`s are Function symbols; a plain value const and a
+    //    destructuring pattern are not
+    //  - plain `foo()`, `this.foo()` and `new Foo()` are attributed to the enclosing
+    //    function/method; `obj.foo()`, `require()`/`import()` and module-scope calls are not
+    //  - a call inside an anonymous callback belongs to the enclosing named function
+    const CALLS_SAMPLE: &str = r#"
+const limit = 10;
+const { a, b } = load();
+
+const format = (s: string) => trim(s);
+export const legacy = function () { return format("x"); };
+
+function trim(s: string) { return s.trim(); }
+
+class Greeter {
+    greet() {
+        this.prepare();
+        const g = new Helper();
+        g.assist();
+        [1].forEach(() => format("y"));
+    }
+    prepare() { require("./setup"); import("./lazy"); }
+}
+
+class Helper { assist() {} }
+
+trim("module scope");
+"#;
+
+    #[test]
+    fn const_bound_functions_are_symbols() {
+        let mut got: Vec<(String, SymbolKind)> = extract(CALLS_SAMPLE)
+            .symbols
+            .into_iter()
+            .map(|s| (s.name, s.kind))
+            .collect();
+        got.sort();
+
+        let mut want: Vec<(String, SymbolKind)> = vec![
+            ("format".to_string(), Function), // arrow_function
+            ("legacy".to_string(), Function), // function_expression
+            ("trim".to_string(), Function),
+            ("Greeter".to_string(), Class),
+            ("greet".to_string(), Method),
+            ("prepare".to_string(), Method),
+            ("Helper".to_string(), Class),
+            ("assist".to_string(), Method),
+        ];
+        want.sort();
+
+        // EXACT set: `limit`, `a`/`b` and the local `g` must not appear.
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        let ex = extract(CALLS_SAMPLE);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want = vec![
+            ("format".to_string(), "trim".to_string()),
+            ("greet".to_string(), "Helper".to_string()), // new Helper()
+            ("greet".to_string(), "format".to_string()), // inside the forEach callback
+            ("greet".to_string(), "prepare".to_string()), // this.prepare()
+            ("legacy".to_string(), "format".to_string()),
+        ];
+        // Absent: `s.trim()` / `g.assist()` / `[1].forEach()` (unknown receivers),
+        // `require`/`import` (module loads), and the module-scope `trim(..)` / `load()`.
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn module_loads_inside_functions_stay_imports() {
+        let specs: Vec<String> = extract(CALLS_SAMPLE)
+            .imports
+            .into_iter()
+            .map(|i| i.specifier)
+            .collect();
+        assert_eq!(specs, ["./setup", "./lazy"]);
     }
 }
