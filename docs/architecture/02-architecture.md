@@ -291,6 +291,8 @@ compass/
 │   ├── compass-cli/                   # `compass` binary + composition root. Owns the explicit cfg-gated
 │   │                                #   register_all() (one feature + one register() call per language);
 │   │                                #   wires the concrete engine into the mcp query port.
+│   │                                #   `main.rs` only dispatches; each command lives in its own
+│   │                                #   module (install, query, audit, map, context, guard).
 │   │
 │   │  ── language plugins: one crate each (the growth axis) ──
 │   ├── compass-lang-go/               # ── Tier 1, BUILT FIRST (walking skeleton) ──
