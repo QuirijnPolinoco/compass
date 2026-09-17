@@ -279,7 +279,50 @@ fn render_context_markdown(path: &Path, pack: &ContextPack) -> String {
         if !f.dependents.is_empty() {
             let _ = write!(line, " — imported by: {}", f.dependents.join(", "));
         }
+        // Only worth the tokens when the blast radius reaches past the importers just listed.
+        if f.affected_count > f.dependents.len() {
+            let _ = write!(line, " — a change here affects {} files", f.affected_count);
+        }
         let _ = writeln!(out, "{line}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compass_core::ContextFile;
+
+    fn pack_with(file: ContextFile) -> ContextPack {
+        ContextPack {
+            file_count: 1,
+            languages: Vec::new(),
+            most_connected: Vec::new(),
+            selected_by: "seeds".to_string(),
+            files: vec![file],
+        }
+    }
+
+    fn file(dependents: &[&str], affected_count: usize) -> ContextFile {
+        ContextFile {
+            path: "src/util.rs".to_string(),
+            language: Some("rust".to_string()),
+            symbols: Vec::new(),
+            depends_on: Vec::new(),
+            dependents: dependents.iter().map(ToString::to_string).collect(),
+            affected_count,
+        }
+    }
+
+    #[test]
+    fn blast_radius_is_rendered_only_when_it_reaches_past_the_listed_importers() {
+        let deep = render_context_markdown(Path::new("."), &pack_with(file(&["a.rs"], 9)));
+        assert!(
+            deep.contains("imported by: a.rs — a change here affects 9 files"),
+            "{deep}"
+        );
+
+        let shallow = render_context_markdown(Path::new("."), &pack_with(file(&["a.rs"], 1)));
+        assert!(!shallow.contains("affects"), "{shallow}");
+    }
 }

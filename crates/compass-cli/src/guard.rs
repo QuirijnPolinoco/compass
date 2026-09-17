@@ -195,6 +195,9 @@ struct GuardAssessment {
     dependents: usize,
     /// Distinct communities its neighbors span, if it's a hub.
     communities_bridged: usize,
+    /// Every file a change can reach — direct *and* transitive dependents. Reported in the
+    /// reason only; selection stays on `dependents` (see [`assess_centrality`]).
+    affected: usize,
 }
 
 /// Assess how central `rel` is in the cached graph, or `None` if it isn't in the map. A file is
@@ -254,11 +257,19 @@ fn assess_centrality(graph: &Graph, rel: &str) -> Option<GuardAssessment> {
         0
     };
 
+    // Same economy for the transitive walk: it only ever shows up in a warning.
+    let affected = if high_centrality {
+        graph.impact(rel).map_or(dependents, |i| i.total_count)
+    } else {
+        dependents
+    };
+
     Some(GuardAssessment {
         high_centrality,
         is_hub,
         dependents,
         communities_bridged,
+        affected,
     })
 }
 
@@ -300,10 +311,17 @@ fn guard_block_enabled() -> bool {
 /// A clear, specific reason naming the file and why it's risky to edit — what the user sees in the
 /// confirmation prompt.
 fn guard_reason(rel: &str, a: &GuardAssessment) -> String {
+    // The transitive reach, when it goes beyond the direct importers already named.
+    let downstream = if a.affected > a.dependents {
+        format!(" ({} files affected downstream)", a.affected)
+    } else {
+        String::new()
+    };
     if a.is_hub && a.communities_bridged >= 2 {
         format!(
-            "compass: {rel} is a hub — {} file(s) import it and it bridges {} parts of the codebase. \
-             Confirm this edit before continuing (Compass guard is a convenience, not a guarantee).",
+            "compass: {rel} is a hub — {} file(s) import it{downstream} and it bridges {} parts of \
+             the codebase. Confirm this edit before continuing (Compass guard is a convenience, \
+             not a guarantee).",
             a.dependents, a.communities_bridged
         )
     } else {
@@ -312,7 +330,7 @@ fn guard_reason(rel: &str, a: &GuardAssessment) -> String {
         // never claims a dependency it can't substantiate.
         let files = if a.dependents == 1 { "file" } else { "files" };
         format!(
-            "compass: {rel} is heavily depended on — {} {files} import it. \
+            "compass: {rel} is heavily depended on — {} {files} import it{downstream}. \
              Confirm this edit before continuing (Compass guard is a convenience, not a guarantee).",
             a.dependents
         )
@@ -341,5 +359,45 @@ fn save_guard_warned(repo: &Path, session_id: &str, warned: &[String]) {
     }
     if let Ok(json) = serde_json::to_string(warned) {
         let _ = std::fs::write(path, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assessment(dependents: usize, affected: usize, bridged: usize) -> GuardAssessment {
+        GuardAssessment {
+            high_centrality: true,
+            is_hub: bridged >= 2,
+            dependents,
+            communities_bridged: bridged,
+            affected,
+        }
+    }
+
+    #[test]
+    fn reason_names_the_downstream_reach_only_when_it_exceeds_the_importers() {
+        let deep = guard_reason("src/util.rs", &assessment(6, 41, 0));
+        assert!(
+            deep.contains("6 files import it (41 files affected downstream)."),
+            "{deep}"
+        );
+
+        // Every affected file is a direct importer -> nothing extra to say.
+        let shallow = guard_reason("src/util.rs", &assessment(6, 6, 0));
+        assert!(shallow.contains("6 files import it."), "{shallow}");
+        assert!(!shallow.contains("downstream"), "{shallow}");
+    }
+
+    #[test]
+    fn hub_reason_keeps_the_bridging_clause_after_the_downstream_reach() {
+        let reason = guard_reason("src/util.rs", &assessment(3, 20, 3));
+        assert!(
+            reason.contains(
+                "3 file(s) import it (20 files affected downstream) and it bridges 3 parts"
+            ),
+            "{reason}"
+        );
     }
 }
