@@ -152,3 +152,59 @@ fn same_file_call_is_resolved_and_unique_global_call_is_heuristic() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn resolves_typescript_calls_across_files() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-typescript");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // format.ts: a const-bound arrow function calling a same-file declaration.
+    std::fs::write(
+        dir.join("format.ts"),
+        "export const format = (s: string) => trim(s);\nfunction trim(s: string) { return s; }\n",
+    )
+    .unwrap();
+    // greeter.ts: a method calling a sibling via `this`, a class via `new`, and `format`
+    // from the other file (unique in the repo).
+    std::fs::write(
+        dir.join("greeter.ts"),
+        "import { format } from \"./format\";\n\
+         class Helper {}\n\
+         export class Greeter {\n\
+             greet() { this.prepare(); new Helper(); return format(\"hi\"); }\n\
+             prepare() {}\n\
+         }\n",
+    )
+    .unwrap();
+
+    let mut registry = Registry::new();
+    registry.register(Box::new(compass_lang_typescript::TypeScriptExtractor));
+    let graph = compass_engine::index(&dir, &registry).expect("index");
+
+    assert_eq!(
+        readable_calls_with_confidence(&graph),
+        vec![
+            (
+                "format".to_string(),
+                "format.ts::trim".to_string(),
+                EdgeConfidence::Resolved
+            ),
+            (
+                "greet".to_string(),
+                "format.ts::format".to_string(),
+                EdgeConfidence::Heuristic
+            ),
+            (
+                "greet".to_string(),
+                "greeter.ts::Helper".to_string(),
+                EdgeConfidence::Resolved
+            ),
+            (
+                "greet".to_string(),
+                "greeter.ts::prepare".to_string(),
+                EdgeConfidence::Resolved
+            ),
+        ]
+    );
+}

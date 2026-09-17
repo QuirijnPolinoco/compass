@@ -22,4 +22,5 @@ notify-debouncer-mini = "0.7.0"
 # are wired into the binary at the CLI composition root (ADR-0003); this dev-dep never links
 # into the shipped artifact.
 compass-lang-rust = { path = "../compass-lang-rust" }
+compass-lang-typescript = { path = "../compass-lang-typescript" }
 compass-core.workspace = true
