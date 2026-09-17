@@ -7,6 +7,8 @@ contain breaking changes).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-17
+
 ### Added
 
 - **R** language extractor: functions, R6/S4/Reference classes and methods, S4 generics, and
@@ -82,7 +84,8 @@ contain breaking changes).
 - MCP server over stdio with `overview`, `file_dependencies` and `broken_imports` tools.
 - Most-connected files in the overview.
 
-[Unreleased]: https://github.com/QuirijnPolinoco/compass/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/QuirijnPolinoco/compass/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/QuirijnPolinoco/compass/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/QuirijnPolinoco/compass/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/QuirijnPolinoco/compass/compare/v0.4.0...v0.6.0
 [0.5.0]: https://github.com/QuirijnPolinoco/compass/compare/v0.4.0...v0.6.0
