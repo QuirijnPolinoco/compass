@@ -9,6 +9,8 @@ contain breaking changes).
 
 ### Added
 
+- **HTML** language extractor: `href`/`src` references to mapped stylesheets, scripts and pages
+  become edges; element ids are symbols. A miss is external, never a broken import.
 - **CSS** language extractor: `@import` edges between stylesheets; `.class`, `#id`,
   `--custom-property` and `@keyframes` names as symbols.
 - Call edges from the Kotlin, Ruby, PHP, C and C++ extractors — every supported language now

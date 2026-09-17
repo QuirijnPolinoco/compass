@@ -34,9 +34,10 @@ compass-lang-c = { path = "../compass-lang-c", optional = true }
 compass-lang-cpp = { path = "../compass-lang-cpp", optional = true }
 compass-lang-r = { path = "../compass-lang-r", optional = true }
 compass-lang-css = { path = "../compass-lang-css", optional = true }
+compass-lang-html = { path = "../compass-lang-html", optional = true }
 
 [features]
-default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust", "lang-kotlin", "lang-ruby", "lang-php", "lang-c", "lang-cpp", "lang-r", "lang-css"]
+default = ["lang-go", "lang-python", "lang-java", "lang-csharp", "lang-typescript", "lang-rust", "lang-kotlin", "lang-ruby", "lang-php", "lang-c", "lang-cpp", "lang-r", "lang-css", "lang-html"]
 lang-go = ["dep:compass-lang-go"]
 lang-python = ["dep:compass-lang-python"]
 lang-java = ["dep:compass-lang-java"]
@@ -50,6 +51,7 @@ lang-c = ["dep:compass-lang-c"]
 lang-cpp = ["dep:compass-lang-cpp"]
 lang-r = ["dep:compass-lang-r"]
 lang-css = ["dep:compass-lang-css"]
+lang-html = ["dep:compass-lang-html"]
 
 # `cargo binstall --git https://github.com/QuirijnPolinoco/compass compass-cli` fetches the
 # matching prebuilt archive from the GitHub Release instead of compiling. Asset names + the

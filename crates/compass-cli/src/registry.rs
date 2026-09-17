@@ -50,5 +50,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-css")]
     registry.register(Box::new(compass_lang_css::CssExtractor));
 
+    #[cfg(feature = "lang-html")]
+    registry.register(Box::new(compass_lang_html::HtmlExtractor));
+
     registry
 }

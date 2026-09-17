@@ -1,0 +1,17 @@
+[package]
+name = "compass-lang-html"
+description = "Compass — HTML language extractor (detection, grammar, id extraction, link/script/anchor resolution)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+compass-core.workspace = true
+compass-extract.workspace = true
+tree-sitter.workspace = true
+tree-sitter-html.workspace = true
+
+[dev-dependencies]
+compass-extract = { workspace = true, features = ["test-util"] }
