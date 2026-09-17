@@ -772,6 +772,21 @@ fn audit_json_output_is_machine_readable() {
 }
 
 #[test]
+fn version_flag_prints_the_crate_version() {
+    for flag in ["--version", "-V", "version"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+            .arg(flag)
+            .output()
+            .expect("run compass");
+        assert!(output.status.success(), "`{flag}` exited non-zero");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            concat!("compass ", env!("CARGO_PKG_VERSION")),
+        );
+    }
+}
+
+#[test]
 fn mcp_answers_impact_symbol_and_language_queries() {
     let stdout = mcp_session(
         fixture(),

@@ -17,6 +17,7 @@ contain breaking changes).
   (previously Rust only). Only calls that can be named without type information are emitted.
 - MCP tools: `impact` ("what breaks if I change this file?"), `find_symbol`, `symbol_calls`
   (callers and callees) and `supported_languages`.
+- `compass --version` (`-V`, `version`).
 - TypeScript/JS: `const f = () => {}` and `const f = function () {}` are now function symbols.
 
 ## [0.7.0] - 2026-06-26

@@ -20,7 +20,7 @@ body:
     id: version
     attributes:
       label: Compass version
-      description: The release you installed (e.g. 0.7.0), or the commit if built from source.
+      description: Output of `compass --version` (0.8.0+), or the release/commit you installed.
     validations:
       required: true
   - type: input

@@ -41,6 +41,10 @@ fn main() -> ExitCode {
             print_help();
             ExitCode::SUCCESS
         }
+        "version" | "-V" | "--version" => {
+            println!("compass {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         other => {
             eprintln!("compass: unknown command `{other}`\n");
             print_help();
@@ -1716,4 +1720,5 @@ fn print_help() {
         "                             (opt-in via `install --guard`; fails open, asks by default)"
     );
     println!("  compass help               Show this help");
+    println!("  compass version            Print the version (also --version, -V)");
 }
