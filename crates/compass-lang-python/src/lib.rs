@@ -2,7 +2,7 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection, the tree-sitter-python grammar, symbol extraction (functions, classes,
-//! methods), and Python's relative + absolute import resolution.
+//! methods), plain-call capture, and Python's relative + absolute import resolution.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -37,11 +37,18 @@ impl Extractor for PythonExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, false, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), false, None);
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -205,60 +212,97 @@ fn normalize(path: &Path) -> String {
 
 /// Recursively pull symbols and imports. `in_class` makes a `def` a Method rather than a
 /// Function.
-fn visit(
-    node: Node,
-    src: &[u8],
-    in_class: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    match node.kind() {
-        "function_definition" => {
-            let kind = if in_class {
-                SymbolKind::Method
-            } else {
-                SymbolKind::Function
-            };
-            push_named(node, "name", kind, src, symbols);
-            // A function body's own defs are plain functions, not methods.
-            recurse(node, src, false, symbols, imports);
-            return;
-        }
-        "class_definition" => {
-            push_named(node, "name", SymbolKind::Class, src, symbols);
-            recurse(node, src, true, symbols, imports);
-            return;
-        }
-        "import_statement" => extract_plain_imports(node, src, imports),
-        "import_from_statement" => {
-            if let Some(module) = node.child_by_field_name("module_name") {
-                if let Ok(text) = module.utf8_text(src) {
-                    imports.push(RawImport {
-                        specifier: text.to_string(),
-                        span: span_of(module),
-                    });
-                }
-            }
-        }
-        _ => {}
-    }
-    recurse(node, src, in_class, symbols, imports);
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
 }
 
-fn recurse(
-    node: Node,
-    src: &[u8],
-    in_class: bool,
-    symbols: &mut Vec<ExtractedSymbol>,
-    imports: &mut Vec<RawImport>,
-) {
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, in_class, symbols, imports);
+impl Visitor<'_> {
+    /// `current_fn` is the `symbols` index of the enclosing function/method, to which calls in
+    /// this subtree are attributed (`None` at module/class scope).
+    fn visit(&mut self, node: Node, in_class: bool, current_fn: Option<usize>) {
+        match node.kind() {
+            "function_definition" => {
+                let kind = if in_class {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                };
+                let idx = self.symbols.len();
+                push_named(node, "name", kind, self.src, self.symbols);
+                let caller = if self.symbols.len() > idx {
+                    Some(idx)
+                } else {
+                    current_fn
+                };
+                // A function body's own defs are plain functions, not methods.
+                self.recurse(node, false, caller);
+                return;
+            }
+            "class_definition" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols);
+                self.recurse(node, true, current_fn);
+                return;
+            }
+            "import_statement" => extract_plain_imports(node, self.src, self.imports),
+            "import_from_statement" => {
+                if let Some(module) = node.child_by_field_name("module_name") {
+                    if let Ok(text) = module.utf8_text(self.src) {
+                        self.imports.push(RawImport {
+                            specifier: text.to_string(),
+                            span: span_of(module),
+                        });
+                    }
+                }
+            }
+            "call" => {
+                if let Some(caller) = current_fn {
+                    if let Some(callee) = callee_name(node, self.src) {
+                        self.calls.push(RawCall {
+                            caller,
+                            callee,
+                            span: span_of(node),
+                        });
+                    }
+                }
+            }
+            _ => {}
         }
-        i += 1;
+        self.recurse(node, in_class, current_fn);
     }
+
+    fn recurse(&mut self, node: Node, in_class: bool, current_fn: Option<usize>) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, in_class, current_fn);
+            }
+            i += 1;
+        }
+    }
+}
+
+/// The callee name when it can be named without type information: a bare name (`foo(..)`,
+/// which also covers instantiation `Foo(..)`) or a method on `self`/`cls`. Calls on any other
+/// receiver (`x.foo()`, `mod.foo()`) need type/module resolution we don't do, so they're left
+/// for the engine to never see rather than guessed at.
+fn callee_name(call: Node, src: &[u8]) -> Option<String> {
+    let function = call.child_by_field_name("function")?;
+    let name = match function.kind() {
+        "identifier" => function,
+        "attribute" => {
+            let object = function.child_by_field_name("object")?;
+            let receiver = object.utf8_text(src).ok()?;
+            if object.kind() != "identifier" || !matches!(receiver, "self" | "cls") {
+                return None;
+            }
+            function.child_by_field_name("attribute")?
+        }
+        _ => return None,
+    };
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 /// `import a.b`, `import a.b as c` — record each module's dotted path.
@@ -530,5 +574,56 @@ def make_adder(n):
             relative_candidates("app/sub", "."),
             vec!["app/sub/__init__.py".to_string()]
         );
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Plain `foo()`, instantiation `Foo()`, and `self.`/`cls.` methods are captured;
+        // `obj.method()` / `os.getcwd()` (unknown receivers) and module-scope calls are not.
+        // A call in a nested def belongs to the nested def.
+        let src = r#"
+import os
+
+def helper():
+    return os.getcwd()
+
+class Service:
+    def run(self):
+        self.prepare()
+        repo = Repository()
+        repo.fetch()
+        return helper()
+
+    @classmethod
+    def build(cls):
+        return cls.create()
+
+    def prepare(self):
+        def inner():
+            return helper()
+        return inner()
+
+helper()
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> = [
+            ("build", "create"),
+            ("inner", "helper"),
+            ("prepare", "inner"),
+            ("run", "Repository"),
+            ("run", "helper"),
+            ("run", "prepare"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(got, want);
     }
 }
