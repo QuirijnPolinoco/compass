@@ -1,0 +1,6 @@
+@import "theme/colors.css";
+@import url("https://fonts.example/inter.css");
+
+.card {
+  color: var(--brand);
+}

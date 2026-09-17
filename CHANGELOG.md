@@ -9,6 +9,8 @@ contain breaking changes).
 
 ### Added
 
+- **CSS** language extractor: `@import` edges between stylesheets; `.class`, `#id`,
+  `--custom-property` and `@keyframes` names as symbols.
 - Call edges from the Kotlin, Ruby, PHP, C and C++ extractors — every supported language now
   contributes to the call graph.
 
