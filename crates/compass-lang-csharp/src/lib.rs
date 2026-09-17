@@ -2,7 +2,8 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection, the tree-sitter-c-sharp grammar, symbol extraction (classes, structs,
-//! interfaces, enums, records, methods), and `using`/namespace import resolution.
+//! interfaces, enums, records, methods), plain-call capture, and `using`/namespace import
+//! resolution.
 //!
 //! C# namespaces are not guaranteed to mirror folders, so resolution is a best-effort
 //! convention heuristic (derive a root by stripping the file's namespace from its path,
@@ -15,8 +16,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -42,11 +43,18 @@ impl Extractor for CSharpExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -161,44 +169,131 @@ fn read_namespace(repo_root: &Path, rel: &Path) -> Option<String> {
     None
 }
 
-fn visit(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>, imports: &mut Vec<RawImport>) {
-    match node.kind() {
-        "class_declaration" => push_named(node, "name", SymbolKind::Class, src, symbols),
-        "struct_declaration" => push_named(node, "name", SymbolKind::Struct, src, symbols),
-        "interface_declaration" => push_named(node, "name", SymbolKind::Interface, src, symbols),
-        "enum_declaration" => push_named(node, "name", SymbolKind::Enum, src, symbols),
-        "record_declaration" => push_named(node, "name", SymbolKind::Struct, src, symbols),
-        "method_declaration" | "constructor_declaration" => {
-            push_named(node, "name", SymbolKind::Method, src, symbols)
-        }
-        "using_directive" => {
-            // Take the first direct namespace name, skipping any `alias =` part.
-            let mut i = 0usize;
-            while i < node.child_count() {
-                if let Some(child) = node.child(i as u32) {
-                    if matches!(child.kind(), "qualified_name" | "identifier") {
-                        if let Ok(text) = child.utf8_text(src) {
-                            imports.push(RawImport {
-                                specifier: text.to_string(),
-                                span: span_of(node),
-                            });
-                        }
-                        break;
-                    }
-                }
-                i += 1;
+/// What a subtree is nested in. `current_fn` is the `symbols` index of the enclosing
+/// method/constructor, to which calls are attributed (`None` outside any).
+#[derive(Default)]
+struct Scope {
+    current_fn: Option<usize>,
+}
+
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            "class_declaration" => {
+                push_named(node, "name", SymbolKind::Class, self.src, self.symbols)
             }
+            "struct_declaration" => {
+                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols)
+            }
+            "interface_declaration" => {
+                push_named(node, "name", SymbolKind::Interface, self.src, self.symbols)
+            }
+            "enum_declaration" => {
+                push_named(node, "name", SymbolKind::Enum, self.src, self.symbols)
+            }
+            "record_declaration" => {
+                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols)
+            }
+            "method_declaration" | "constructor_declaration" => {
+                return self.enter_function(node, SymbolKind::Method, scope);
+            }
+            "using_directive" => {
+                // Take the first direct namespace name, skipping any `alias =` part.
+                let mut i = 0usize;
+                while i < node.child_count() {
+                    if let Some(child) = node.child(i as u32) {
+                        if matches!(child.kind(), "qualified_name" | "identifier") {
+                            if let Ok(text) = child.utf8_text(self.src) {
+                                self.imports.push(RawImport {
+                                    specifier: text.to_string(),
+                                    span: span_of(node),
+                                });
+                            }
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "invocation_expression" => {
+                let callee = node
+                    .child_by_field_name("function")
+                    .and_then(|f| invoked_name(f, self.src));
+                self.push_call(node, callee, scope);
+            }
+            // `new Helper()` — a call to the class (its constructor).
+            "object_creation_expression" => {
+                let callee = node
+                    .child_by_field_name("type")
+                    .filter(|t| t.kind() == "identifier")
+                    .and_then(|t| t.utf8_text(self.src).ok())
+                    .map(str::to_string);
+                self.push_call(node, callee, scope);
+            }
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, scope);
     }
 
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, symbols, imports);
-        }
-        i += 1;
+    /// Push the method's symbol, then walk its body with that symbol as the caller (if it
+    /// got a symbol at all — otherwise keep the parent as caller).
+    fn enter_function(&mut self, node: Node, kind: SymbolKind, scope: &Scope) {
+        let idx = self.symbols.len();
+        push_named(node, "name", kind, self.src, self.symbols);
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(node, &Scope { current_fn });
     }
+
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
+        }
+    }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+}
+
+/// The invoked method's name when it can be named without type information: an unqualified
+/// call (`Helper()`) or one on `this`. Calls on any other receiver (`other.Go()`,
+/// `Util.Stat()`) need type resolution we don't do, so they're left for the engine to never see
+/// rather than guessed at.
+fn invoked_name(function: Node, src: &[u8]) -> Option<String> {
+    let name = match function.kind() {
+        "identifier" => function,
+        "member_access_expression" => {
+            let receiver = function.child(0)?;
+            if receiver.utf8_text(src) != Ok("this") {
+                return None;
+            }
+            function.child_by_field_name("name")?
+        }
+        _ => return None,
+    };
+    Some(name.utf8_text(src).ok()?.to_string())
 }
 
 fn push_named(
@@ -393,5 +488,46 @@ namespace Company.App
         assert_eq!(source_root("src/Company/App", "Company.App"), "src");
         assert_eq!(source_root("Company/App", "Company.App"), "");
         assert_eq!(source_root("foo", ""), "foo");
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Unqualified calls, `this.` calls and `new Type()` are captured; calls on other
+        // receivers (`other.Prepare()`, `Util.Stat()`) are not.
+        let src = r#"
+class Service {
+    Service() { Init(); }
+
+    void Run(Service other) {
+        this.Prepare();
+        Helper();
+        other.Prepare();
+        Util.Stat();
+        var h = new Worker();
+    }
+
+    void Prepare() {}
+    void Helper() {}
+    void Init() {}
+}
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> = [
+            ("Run", "Helper"),
+            ("Run", "Prepare"),
+            ("Run", "Worker"),
+            ("Service", "Init"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(got, want);
     }
 }
