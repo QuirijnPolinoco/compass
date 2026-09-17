@@ -239,11 +239,15 @@ For any host, `compass init`/`install` registers the MCP server (`compass serve`
 | `file_dependencies` | What a file imports and what imports it |
 | `subgraph` | The neighborhood around a file (N import-hops) — a small, cheap slice instead of grepping |
 | `shortest_path` | The import chain connecting two files |
+| `impact` | **What breaks if I change this file?** Every direct and transitive dependent, with its distance |
 | `hubs` | The files that bridge many communities — shared hubs / "god files" |
 | `get_community` | The files in one community (a cohesive sub-part of the repo) |
 | `import_cycles` | Circular-import clusters, each with a concrete cycle path (which edge to cut) |
 | `broken_imports` | Imports that resolve to no real file |
 | `isolated_files` | Files with no resolved import edges in or out (a smell, not a defect) |
+| `find_symbol` | Where a function/class/method is defined — kind, file and line, by (partial) name |
+| `symbol_calls` | Who calls a symbol and what it calls, with edge confidence |
+| `supported_languages` | The languages this build maps, and which appear in this repo |
 
 * * *
 

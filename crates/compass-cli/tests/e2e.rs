@@ -772,6 +772,46 @@ fn audit_json_output_is_machine_readable() {
 }
 
 #[test]
+fn mcp_answers_impact_symbol_and_language_queries() {
+    let stdout = mcp_session(
+        fixture(),
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"impact","arguments":{"file":"util/util.go"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"find_symbol","arguments":{"name":"greeting"}}}"#,
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"symbol_calls","arguments":{"name":"Greeting"}}}"#,
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"supported_languages","arguments":{}}}"#,
+        ],
+    );
+    for tool in [
+        "impact",
+        "find_symbol",
+        "symbol_calls",
+        "supported_languages",
+    ] {
+        assert!(stdout.contains(tool), "tools/list lacks {tool}:\n{stdout}");
+    }
+    // impact(util/util.go): main.go imports it directly.
+    assert!(
+        stdout.contains(r#"\"direct_count\": 1"#),
+        "stdout:\n{stdout}"
+    );
+    // find_symbol is case-insensitive and reports the definition's file + 1-based line.
+    assert!(
+        stdout.contains(r#"\"name\": \"Greeting\""#),
+        "stdout:\n{stdout}"
+    );
+    assert!(stdout.contains(r#"\"line\": 4"#), "stdout:\n{stdout}");
+    // symbol_calls answers even when no call edge exists (`util.Greeting()` is a package call).
+    assert!(stdout.contains(r#"\"callers\": []"#), "stdout:\n{stdout}");
+    // supported_languages separates what the build supports from what this repo contains.
+    assert!(stdout.contains("in_this_repository"), "stdout:\n{stdout}");
+    assert!(stdout.contains("typescript"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn mcp_lists_tools_and_resolves_dependencies() {
     let stdout = mcp_session(
         fixture(),

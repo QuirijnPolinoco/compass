@@ -46,15 +46,39 @@ struct CommunityArgs {
     community: u32,
 }
 
+/// Arguments for `find_symbol`: the name to look up.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SymbolArgs {
+    /// The symbol name (or part of it), case-insensitive.
+    name: String,
+}
+
+/// Arguments for `symbol_calls`: the symbol, optionally pinned to one file.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SymbolCallsArgs {
+    /// The exact symbol name, as reported by `find_symbol`.
+    name: String,
+    /// Repo-relative, forward-slash path, to pick one definition when the name is defined in
+    /// several files.
+    #[serde(default)]
+    file: Option<String>,
+}
+
 /// The MCP server. Holds a query handle and exposes the map as MCP tools.
 #[derive(Clone)]
 pub struct MapServer {
     query: Query,
+    /// Every language this binary can map — a property of the build, not of the mapped repo,
+    /// so the composition root passes it in (the server never sees the extractor registry).
+    supported_languages: Vec<String>,
 }
 
 impl MapServer {
-    pub fn new(query: Query) -> Self {
-        Self { query }
+    pub fn new(query: Query, supported_languages: Vec<String>) -> Self {
+        Self {
+            query,
+            supported_languages,
+        }
     }
 }
 
@@ -190,6 +214,64 @@ impl MapServer {
             None => format!("{{\"error\":\"no community with id {community}\"}}"),
         }
     }
+
+    #[tool(
+        description = "What breaks if I change this file? Every file that imports it directly or \
+                       transitively, each with its distance in import-hops (1 = direct), nearest \
+                       first, plus direct/total counts. Check this before a refactor or a risky \
+                       edit. Arg `file` is a repo-relative path."
+    )]
+    async fn impact(&self, Parameters(FileArgs { file }): Parameters<FileArgs>) -> String {
+        match self.query.impact(&file) {
+            Some(impact) => serde_json::to_string_pretty(&impact).unwrap_or_default(),
+            None => format!("{{\"error\":\"file not in map: {file}\"}}"),
+        }
+    }
+
+    #[tool(
+        description = "Where is this symbol defined? Finds functions, classes, methods, etc. by \
+                       name (case-insensitive; exact matches first, then partial) and returns each \
+                       one's kind, file and line — jump straight to a definition instead of \
+                       grepping. Arg `name`. Capped at 50 results."
+    )]
+    async fn find_symbol(&self, Parameters(SymbolArgs { name }): Parameters<SymbolArgs>) -> String {
+        serde_json::to_string_pretty(&self.query.find_symbol(&name)).unwrap_or_default()
+    }
+
+    #[tool(
+        description = "Who calls this symbol, and what does it call? For every symbol named exactly \
+                       `name` (optionally only in `file`), lists its callers and callees with their \
+                       file, line and edge confidence (resolved = same-file, heuristic = unique \
+                       name match). Only unambiguous calls are recorded, so an empty list does not \
+                       prove a symbol is unused."
+    )]
+    async fn symbol_calls(
+        &self,
+        Parameters(SymbolCallsArgs { name, file }): Parameters<SymbolCallsArgs>,
+    ) -> String {
+        serde_json::to_string_pretty(&self.query.symbol_calls(&name, file.as_deref()))
+            .unwrap_or_default()
+    }
+
+    #[tool(
+        description = "The languages this Compass build can map, and which of them appear in this \
+                       repository. Files in any other language are not in the map — fall back to \
+                       normal search for those."
+    )]
+    async fn supported_languages(&self) -> String {
+        let in_repo: Vec<String> = self
+            .query
+            .overview()
+            .languages
+            .into_iter()
+            .map(|l| l.language.to_string())
+            .collect();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "supported": self.supported_languages,
+            "in_this_repository": in_repo,
+        }))
+        .unwrap_or_default()
+    }
 }
 
 #[tool_handler]
@@ -197,10 +279,10 @@ impl ServerHandler for MapServer {}
 
 /// Serve the map over MCP on stdio until the client disconnects. Builds and owns its own
 /// async runtime, so callers (the CLI) stay synchronous.
-pub fn serve_stdio(query: Query) -> anyhow::Result<()> {
+pub fn serve_stdio(query: Query, supported_languages: Vec<String>) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let service = MapServer::new(query)
+        let service = MapServer::new(query, supported_languages)
             .serve(rmcp::transport::stdio())
             .await?;
         service.waiting().await?;
