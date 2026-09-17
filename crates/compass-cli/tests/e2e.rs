@@ -97,6 +97,10 @@ fn fixture_css() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-css")
 }
 
+fn fixture_html() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-html")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -349,6 +353,27 @@ fn overview_of_css_fixture() {
     assert!(stdout.contains("import edges:  1"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
     assert!(stdout.contains("css"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn overview_of_html_fixture() {
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("overview")
+        .arg(fixture_html())
+        .output()
+        .expect("run compass");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // Two pages, one stylesheet, one script. index.html -> site.css, app.js, about.html;
+    // about.html -> site.css, index.html. The font URL and the unmapped image are external,
+    // never broken.
+    assert!(stdout.contains("files:        4"), "stdout:\n{stdout}");
+    assert!(stdout.contains("import edges:  5"), "stdout:\n{stdout}");
+    assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
+    assert!(stdout.contains("html"), "stdout:\n{stdout}");
 }
 
 #[test]
