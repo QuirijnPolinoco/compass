@@ -2,7 +2,7 @@
 //!
 //! A self-contained unit behind the [`compass_extract::Extractor`] trait (ADR-0002):
 //! detection (.c/.h), the tree-sitter-c grammar, symbol extraction (functions, structs,
-//! unions, enums), and `#include` resolution.
+//! unions, enums), direct-call capture, and `#include` resolution.
 //!
 //! In-repo file dependencies come from quoted includes (`#include "foo.h"`), resolved
 //! relative to the including file. Angle-bracket includes (`#include <stdio.h>`) are
@@ -12,8 +12,8 @@ use std::path::Path;
 
 use compass_core::{LanguageId, Span, SymbolKind};
 use compass_extract::{
-    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
-    ResolvedImport,
+    Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawCall, RawImport,
+    ResolutionContext, ResolvedImport,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -39,11 +39,18 @@ impl Extractor for CExtractor {
     fn extract(&self, source: &[u8], tree: &Tree) -> Extraction {
         let mut symbols = Vec::new();
         let mut imports = Vec::new();
-        visit(tree.root_node(), source, &mut symbols, &mut imports);
+        let mut calls = Vec::new();
+        let mut visitor = Visitor {
+            src: source,
+            symbols: &mut symbols,
+            imports: &mut imports,
+            calls: &mut calls,
+        };
+        visitor.visit(tree.root_node(), &Scope::default());
         Extraction {
             symbols,
             imports,
-            calls: Vec::new(),
+            calls,
         }
     }
 
@@ -101,52 +108,103 @@ fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn visit(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>, imports: &mut Vec<RawImport>) {
-    match node.kind() {
-        // Only count definitions (those with a body), not type references.
-        "struct_specifier" | "union_specifier" => {
-            if node.child_by_field_name("body").is_some() {
-                push_named(node, "name", SymbolKind::Struct, src, symbols);
-            }
-        }
-        "enum_specifier" => {
-            if node.child_by_field_name("body").is_some() {
-                push_named(node, "name", SymbolKind::Enum, src, symbols);
-            }
-        }
-        "function_definition" => {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = declarator_name(declarator, src) {
-                    symbols.push(ExtractedSymbol {
-                        name,
-                        kind: SymbolKind::Function,
-                        span: span_of(declarator),
-                    });
+/// What a subtree is nested in. `current_fn` is the `symbols` index of the enclosing
+/// function, to which calls are attributed (`None` outside any).
+#[derive(Default)]
+struct Scope {
+    current_fn: Option<usize>,
+}
+
+/// Recursively pulls symbols, import specifiers and calls from the parse tree.
+struct Visitor<'a> {
+    src: &'a [u8],
+    symbols: &'a mut Vec<ExtractedSymbol>,
+    imports: &'a mut Vec<RawImport>,
+    calls: &'a mut Vec<RawCall>,
+}
+
+impl Visitor<'_> {
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        match node.kind() {
+            // Only count definitions (those with a body), not type references.
+            "struct_specifier" | "union_specifier" => {
+                if node.child_by_field_name("body").is_some() {
+                    push_named(node, "name", SymbolKind::Struct, self.src, self.symbols);
                 }
             }
-        }
-        "preproc_include" => {
-            if let Some(path) = node.child_by_field_name("path") {
-                // `"foo.h"` is a local include; `<foo.h>` (system_lib_string) is external.
-                if path.kind() == "string_literal" {
-                    if let Ok(text) = path.utf8_text(src) {
-                        imports.push(RawImport {
-                            specifier: text.trim_matches('"').to_string(),
-                            span: span_of(node),
-                        });
+            "enum_specifier" => {
+                if node.child_by_field_name("body").is_some() {
+                    push_named(node, "name", SymbolKind::Enum, self.src, self.symbols);
+                }
+            }
+            "function_definition" => return self.enter_function(node, scope),
+            "preproc_include" => {
+                if let Some(path) = node.child_by_field_name("path") {
+                    // `"foo.h"` is a local include; `<foo.h>` (system_lib_string) is external.
+                    if path.kind() == "string_literal" {
+                        if let Ok(text) = path.utf8_text(self.src) {
+                            self.imports.push(RawImport {
+                                specifier: text.trim_matches('"').to_string(),
+                                span: span_of(node),
+                            });
+                        }
                     }
                 }
             }
+            // Only direct calls by name. A call through a function pointer or struct field
+            // (`o->fn()`, `(*fp)()`) has no statically known target.
+            "call_expression" => {
+                let callee = node
+                    .child_by_field_name("function")
+                    .filter(|f| f.kind() == "identifier")
+                    .and_then(|f| f.utf8_text(self.src).ok())
+                    .map(str::to_string);
+                self.push_call(node, callee, scope);
+            }
+            _ => {}
         }
-        _ => {}
+        self.recurse(node, scope);
     }
 
-    let mut i = 0usize;
-    while i < node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            visit(child, src, symbols, imports);
+    fn recurse(&mut self, node: Node, scope: &Scope) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                self.visit(child, scope);
+            }
+            i += 1;
         }
-        i += 1;
+    }
+
+    fn push_call(&mut self, node: Node, callee: Option<String>, scope: &Scope) {
+        if let (Some(caller), Some(callee)) = (scope.current_fn, callee) {
+            self.calls.push(RawCall {
+                caller,
+                callee,
+                span: span_of(node),
+            });
+        }
+    }
+
+    /// Push the function's symbol (named by its declarator), then walk its body with that
+    /// symbol as the caller (if it got a symbol at all — otherwise keep the parent as caller).
+    fn enter_function(&mut self, node: Node, scope: &Scope) {
+        let idx = self.symbols.len();
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(name) = declarator_name(declarator, self.src) {
+                self.symbols.push(ExtractedSymbol {
+                    name,
+                    kind: SymbolKind::Function,
+                    span: span_of(declarator),
+                });
+            }
+        }
+        let current_fn = if self.symbols.len() > idx {
+            Some(idx)
+        } else {
+            scope.current_fn
+        };
+        self.recurse(node, &Scope { current_fn });
     }
 }
 
@@ -329,5 +387,36 @@ struct Point make_point(int x, int y) {
         assert_eq!(resolve_path("src/a", "../util.h"), "src/util.h");
         assert_eq!(resolve_path("", "util.h"), "util.h");
         assert_eq!(resolve_path("src", "./util.h"), "src/util.h");
+    }
+
+    #[test]
+    fn captures_calls_attributed_to_the_enclosing_function() {
+        // Direct calls by name are captured; calls through a struct field or a function
+        // pointer are not, and a file-scope initializer has no caller.
+        let src = r#"
+int helper(int x) { return x; }
+
+int ready = helper(0);
+
+void run(struct ops *o, int (*fp)(int)) {
+    helper(1);
+    o->fn(2);
+    (*fp)(3);
+    log_it(helper(4));
+}
+"#;
+        let ex = extract(src);
+        let mut got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        got.sort();
+
+        let want: Vec<(String, String)> = [("run", "helper"), ("run", "helper"), ("run", "log_it")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(got, want);
     }
 }
