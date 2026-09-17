@@ -50,7 +50,7 @@ Tier 1 (v1): Go, Python, Java, C#, TypeScript/JavaScript
 Tier 2: Rust, Kotlin, Ruby, PHP, C
 Tier 3 (hard): C++ (shipped), Swift, F#
 Data / scientific: R (shipped)
-Web assets (in scope): HTML/CSS — maps a different kind of relationship (links and references, not function calls): <link>/<script>/<a> references between files, asset links, and CSS class/ID usage across HTML. Built on the same extractor interface, just emitting reference-type edges.
+Web assets: CSS (shipped) — `@import` edges between stylesheets; `.class` / `#id` / `--custom-property` / `@keyframes` names as symbols. HTML (next) — <link>/<script>/<a> references to mapped files, on the same extractor interface. Later: CSS class/ID *usage* across HTML, which needs a reference-type edge the core doesn't have yet.
 Separate extractor (later): SQL — table/column/foreign-key graph, distinct from code.
 
 3. User Stories

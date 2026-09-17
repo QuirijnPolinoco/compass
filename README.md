@@ -9,7 +9,7 @@ graph powers a **live, interactive map** you can open in the browser.
 ![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 ![platforms](https://img.shields.io/badge/platforms-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-informational)
 ![built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
-![languages mapped](https://img.shields.io/badge/languages%20mapped-12-success)
+![languages mapped](https://img.shields.io/badge/languages%20mapped-13-success)
 ![local-first](https://img.shields.io/badge/local--first-no%20network-success)
 
 ```sh
@@ -33,7 +33,7 @@ lives. Then it delivers that map two ways:
 It's **local-first** (parsing runs on your machine with [tree-sitter] — no network, no API keys,
 your code never leaves the box), **one binary, zero config**, and **model-agnostic**.
 
-> **Status:** early but functional. The engine, MCP server, 12 languages, live re-mapping, the
+> **Status:** early but functional. The engine, MCP server, 13 languages, live re-mapping, the
 > visual map, and prompt pre-injection all work and are tested.
 
 * * *
@@ -77,7 +77,7 @@ the opt-in destructive-edit guard). It only writes per-host config — no teleme
 |---|---|---|---|---|
 | Go | Python | Java | C# | TypeScript/JS |
 | Rust | Kotlin | Ruby | PHP | C |
-| C++ | R | | | |
+| C++ | R | CSS | | |
 
 Adding a language is a self-contained unit of work behind a stable interface — see
 [CONTRIBUTING.md](CONTRIBUTING.md). More are on the roadmap in [`ProjectInfo.md`](ProjectInfo.md).
@@ -108,7 +108,7 @@ Then open a new terminal and check:
 
 ```sh
 compass --help
-compass languages      # lists all 12 languages
+compass languages      # lists all 13 languages
 ```
 
 What it does: downloads the matching archive from the [latest GitHub

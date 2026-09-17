@@ -41,6 +41,7 @@ jobs:
           - { feature: lang-csharp, lang: csharp }
           - { feature: lang-typescript, lang: typescript }
           - { feature: lang-r, lang: r }
+          - { feature: lang-css, lang: css }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
