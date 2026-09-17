@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in Compass doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal repository or file layout that shows the problem is ideal.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Compass version
+      description: The release you installed (e.g. 0.7.0), or the commit if built from source.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 / macOS 15 (arm64) / Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: languages
+    attributes:
+      label: Language(s) of the mapped repository
+      placeholder: TypeScript, Python

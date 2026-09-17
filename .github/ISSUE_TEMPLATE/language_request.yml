@@ -1,0 +1,30 @@
+name: Language request
+description: Ask for (or offer to add) a new language extractor
+labels: [language]
+body:
+  - type: input
+    id: language
+    attributes:
+      label: Language
+    validations:
+      required: true
+  - type: input
+    id: grammar
+    attributes:
+      label: tree-sitter grammar
+      description: Link to the grammar crate/repo, if one exists.
+  - type: textarea
+    id: imports
+    attributes:
+      label: How do files reference each other?
+      description: >
+        The import/include mechanism that should become edges (e.g. `#include "x.h"`,
+        `require_relative`, `source("x.R")`) and what should count as external.
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to implement this myself (see CONTRIBUTING §4)

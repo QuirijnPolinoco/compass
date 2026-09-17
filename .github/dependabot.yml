@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      tree-sitter:
+        patterns: ["tree-sitter*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
