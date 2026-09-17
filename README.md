@@ -181,6 +181,8 @@ compass map                  # open the live visual map (auto-picks a free local
 | `compass watch` | Re-map automatically as you edit |
 | `compass serve` | Run the MCP server over stdio |
 | `compass guard` | Opt-in `PreToolUse` hook — asks before editing a hub file (wired by `install --guard`) |
+| `compass languages` | List the languages this build maps |
+| `compass --version` | Print the installed version |
 
 * * *
 
