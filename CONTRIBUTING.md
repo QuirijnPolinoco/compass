@@ -108,6 +108,8 @@ PR checklist:
 - **One logical change per commit;** keep history reviewable.
 - **No AI/tool attribution in commit messages.** Do not add `Co-Authored-By` trailers or
   any automated-tool marks — project history stays clean.
+- **Changelog:** user-facing changes get a line under **Unreleased** in
+  [`CHANGELOG.md`](CHANGELOG.md), in the same PR.
 - **PRs** should explain the *why*, link the issue, and (for a language) tick the §4
   checklist. Green CI (fmt + clippy + tests, including the isolated per-language build) is
   required to merge.
