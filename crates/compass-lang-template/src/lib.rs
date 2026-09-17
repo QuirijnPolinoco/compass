@@ -41,8 +41,9 @@ impl Extractor for TemplateExtractor {
         Extraction {
             symbols,
             imports,
-            // Optional: a call graph for the visual map. Leave empty unless your grammar makes
-            // caller→callee easy to capture; see compass-lang-rust for an example. Each `RawCall`
+            // Optional, but every shipped language does it: caller→callee pairs for the call graph.
+            // See compass-lang-java for a compact example — emit only callees you can name without
+            // type information (plain calls, calls on `this`, constructors). Each `RawCall`
             // names a callee that the engine resolves to a symbol (same-file first, else a unique
             // global match — ambiguous names are skipped, so this never invents a wrong edge).
             calls: Vec::new(),

@@ -122,7 +122,7 @@ form live in `compass-core` (ADR-0004).
 | `Symbol` node | `compass-core` | same | name, kind (function/class/method/…), defining file, source span |
 | `Imports` edge | `compass-core` | same | File → File, produced by the `resolve` phase; unresolved targets become `Diagnostic`s (FR-12/D2) |
 | `Defines` edge | `compass-core` | same | File → Symbol |
-| `Calls` edge | `compass-core` | same | Symbol → Symbol; resolved by the engine from each extractor's raw calls (same-file match, else a unique global one; ambiguous skipped). Emitted by the Rust, TypeScript/JS, Python, Go, Java, C# and R extractors today; other languages opt in per crate |
+| `Calls` edge | `compass-core` | same | Symbol → Symbol; resolved by the engine from each extractor's raw calls (same-file match, else a unique global one; ambiguous skipped). Emitted by every language extractor, each naming only the callees it can identify without type information (plain calls, calls on `this`/`self`, constructors) |
 | `References` edge | `compass-core` | same | File → File; reserved for HTML/CSS link/asset edges (FR-19/H4) |
 | `Diagnostic` | `compass-core` | in-memory + surfaced via MCP | non-fatal per-file issues: parse errors, unresolved imports — the universal sink |
 
