@@ -684,6 +684,10 @@ pub struct ContextFile {
     pub depends_on: Vec<String>,
     /// Files that import this file (capped).
     pub dependents: Vec<String>,
+    /// How many files a change here can reach — direct *and* transitive dependents
+    /// ([`MapQuery::impact`]). The uncapped blast radius, where `dependents` is only the first hop.
+    #[serde(default)]
+    pub affected_count: usize,
 }
 
 /// A token-bounded slice of the map to pre-inject into a prompt (ADR-0006).
@@ -1632,12 +1636,14 @@ impl Graph {
             dependents = fd.dependents;
             dependents.truncate(25);
         }
+        let affected_count = self.impact(&path).map_or(0, |i| i.total_count);
         ContextFile {
             path,
             language,
             symbols,
             depends_on,
             dependents,
+            affected_count,
         }
     }
 }
@@ -2325,5 +2331,22 @@ mod tests {
         assert_eq!(only_b.len(), 1);
         assert_eq!(only_b[0].symbol.file, "b.rs");
         assert!(g.symbol_calls("helper", Some("missing.rs")).is_empty());
+    }
+
+    #[test]
+    fn context_files_carry_their_transitive_blast_radius() {
+        // c -> b -> a: `a` has one direct importer but two affected files.
+        let g = graph_with_edges(
+            &["a.rs", "b.rs", "c.rs"],
+            &[("b.rs", "a.rs"), ("c.rs", "b.rs")],
+        );
+        let pack = g.context(&ContextRequest {
+            seeds: vec!["a.rs".to_string()],
+            query: None,
+            max_files: 10,
+        });
+        let a = pack.files.iter().find(|f| f.path == "a.rs").expect("a.rs");
+        assert_eq!(a.dependents, ["b.rs"]);
+        assert_eq!(a.affected_count, 2);
     }
 }

@@ -7,6 +7,12 @@ contain breaking changes).
 
 ## [Unreleased]
 
+### Changed
+
+- `compass context` and `compass guard` now report a file's **transitive** blast radius (every
+  file a change can reach), not just its direct importers.
+- Internal: `compass-cli` is split into per-command modules.
+
 ## [0.8.0] - 2026-09-17
 
 ### Added
