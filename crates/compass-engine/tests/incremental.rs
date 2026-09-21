@@ -108,3 +108,58 @@ fn no_prev_cache_is_a_full_index() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_cached_extraction_for_an_unregistered_language_is_not_reused() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-language-set");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+
+    let (_, cache) = compass_engine::index_incremental(&dir, &registry(), None).unwrap();
+    assert!(cache.contains_key("a.rs"));
+
+    // A build without the Rust extractor sees the same cache. a.rs is unchanged, but this
+    // registry could never have produced that extraction, so the file must not be mapped.
+    let (graph, _) =
+        compass_engine::index_incremental(&dir, &Registry::new(), Some(&cache)).unwrap();
+    assert!(graph.files().is_empty(), "files: {:?}", graph.files());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn caches_written_by_another_release_are_discarded() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-producer");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+
+    let (graph, extractions) = compass_engine::index_incremental(&dir, &registry(), None).unwrap();
+    compass_engine::cache::save(&dir, &graph).unwrap();
+    compass_engine::cache::save_extractions(&dir, &extractions).unwrap();
+    assert!(compass_engine::cache::load(&dir).is_some());
+    assert!(compass_engine::cache::load_extractions(&dir).is_some());
+
+    // Re-stamp both files as another release's output (same format version). An upgrade must
+    // not keep serving the old release's extraction of files that haven't changed since.
+    for file in ["graph.json", "extractions.json"] {
+        let path = dir.join(".compass").join(file);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["producer"] = serde_json::json!("0.0.0-other");
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    }
+    assert!(compass_engine::cache::load(&dir).is_none());
+    assert!(compass_engine::cache::load_extractions(&dir).is_none());
+
+    // A cache from before the stamp existed (no `producer` key) is discarded the same way.
+    let path = dir.join(".compass").join("extractions.json");
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("producer");
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    assert!(compass_engine::cache::load_extractions(&dir).is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
