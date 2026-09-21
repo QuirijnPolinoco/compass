@@ -40,6 +40,10 @@ contain breaking changes).
 
 ### Changed
 
+- Files larger than 1 MB, minified files (`*.min.*`, or content that is one enormous line) and
+  lockfiles are **mapped but not analysed**: they stay in the graph, so imports of them resolve,
+  but contribute no symbols — and say so (`not analysed` in `overview`, hollow in the map).
+  A vendored `cytoscape.umd.min.js` no longer shows up as a 600-symbol file.
 - Files now carry a **category** (`code`, `markup`, and — for the supporting file types to
   come — `data`, `contract`, `config`, …). Blast radius, the guard, cycles, hubs, isolated-file
   smells, communities and context seeding only ever consider code-like files, so a mapped

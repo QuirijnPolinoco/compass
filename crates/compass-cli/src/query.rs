@@ -22,6 +22,12 @@ pub(crate) fn run_overview(path: &Path) -> ExitCode {
     println!("  symbols:      {}", overview.symbol_count);
     println!("  import edges:  {}", overview.import_edge_count);
     println!("  diagnostics:  {}", overview.diagnostic_count);
+    if overview.not_analysed_count > 0 {
+        println!(
+            "  not analysed: {} (too large, minified or generated — mapped, contents skipped)",
+            overview.not_analysed_count
+        );
+    }
     if !overview.languages.is_empty() {
         println!("  languages:");
         for stat in &overview.languages {

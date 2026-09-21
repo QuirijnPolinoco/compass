@@ -111,6 +111,11 @@ pub struct File {
     /// Absent in graphs cached before categories existed → `code`, which is what they all were.
     #[serde(default)]
     pub category: FileCategory,
+    /// Why this file's contents were not analysed (too large, minified, generated), if they
+    /// weren't. Such a file is still a node — imports of it resolve — but it has no symbols and
+    /// no outgoing edges, and says so rather than looking like an empty file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_analysed: Option<String>,
     /// Hash of the file contents — drives incremental staleness detection.
     pub content_hash: u64,
 }
@@ -205,9 +210,17 @@ impl Graph {
             path,
             language,
             category,
+            not_analysed: None,
             content_hash,
         });
         id
+    }
+
+    /// Record that `file`'s contents were skipped, and why (see [`File::not_analysed`]).
+    pub fn mark_not_analysed(&mut self, file: FileId, reason: impl Into<String>) {
+        if let Some(f) = self.files.get_mut(file.0 as usize) {
+            f.not_analysed = Some(reason.into());
+        }
     }
 
     pub fn add_symbol(
@@ -631,6 +644,10 @@ pub struct Overview {
     pub symbol_count: usize,
     pub import_edge_count: usize,
     pub diagnostic_count: usize,
+    /// Files that are in the map but whose contents were skipped (too large, minified,
+    /// generated) — so a reader knows the map is deliberately incomplete there.
+    #[serde(default)]
+    pub not_analysed_count: usize,
     /// Per-language counts of the code-like files.
     pub languages: Vec<LanguageStat>,
     /// Per-type counts of the supporting (non-code) files — data, contracts, config (ADR-0007).
@@ -726,6 +743,9 @@ pub struct GraphNode {
     /// [`FileCategory`] of the file (symbols inherit their file's) — what the map's legend and
     /// hide/show toggles are built from.
     pub category: String,
+    /// Why the file's contents were not analysed, if they weren't ([`File::not_analysed`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_analysed: Option<String>,
     /// Symbol kind, for symbol nodes only.
     pub symbol_kind: Option<SymbolKind>,
     /// Structural community id — files that depend on each other share one (ADR-0005).
@@ -915,6 +935,11 @@ impl MapQuery for Graph {
             symbol_count: self.symbols.len(),
             import_edge_count: self.imports.len(),
             diagnostic_count: self.diagnostics.len(),
+            not_analysed_count: self
+                .files
+                .iter()
+                .filter(|f| f.not_analysed.is_some())
+                .count(),
             languages: self.language_stats(),
             supporting: self.file_type_stats(false),
             most_connected: self.top_connected(10),
@@ -995,6 +1020,7 @@ impl MapQuery for Graph {
                 path,
                 language: Some(f.language.as_str().to_string()),
                 category: f.category.as_str().to_string(),
+                not_analysed: f.not_analysed.clone(),
                 symbol_kind: None,
                 group: groups[idx],
                 is_hub: is_hub[idx],
@@ -1037,6 +1063,7 @@ impl MapQuery for Graph {
                         .get(fidx)
                         .map(|f| f.category.as_str().to_string())
                         .unwrap_or_default(),
+                    not_analysed: None,
                     symbol_kind: Some(s.kind),
                     group: groups.get(fidx).copied().unwrap_or(0),
                     is_hub: false,
@@ -1373,9 +1400,14 @@ impl MapQuery for Graph {
                 touched[d.file.0 as usize] = true;
             }
         }
-        // Only code-like files can be a smell: a dataset nothing reads yet is not a defect.
+        // Only code-like files can be a smell: a dataset nothing reads yet is not a defect. Nor
+        // is a file we never looked inside — its imports are unknown, not absent.
         let mut files: Vec<String> = (0..self.files.len())
-            .filter(|&i| !touched[i] && self.is_code_like(FileId(i as u32)))
+            .filter(|&i| {
+                !touched[i]
+                    && self.is_code_like(FileId(i as u32))
+                    && self.files[i].not_analysed.is_none()
+            })
             .filter_map(|i| {
                 self.file_path(FileId(i as u32))
                     .map(|p| p.to_string_lossy().into_owned())

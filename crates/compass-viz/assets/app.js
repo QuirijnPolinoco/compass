@@ -57,6 +57,12 @@
       },
       { selector: 'node[kind = "symbol"]', style: { shape: "diamond", "font-size": 6 } },
       { selector: "node[?isHub]", style: { shape: "round-rectangle" } },
+      // Mapped, but its contents were skipped (too large / minified): hollow, so it doesn't
+      // read as an ordinary file with nothing in it.
+      {
+        selector: "node[notAnalysed]",
+        style: { "background-opacity": 0.15, "border-width": 1.5, "border-style": "dashed", "border-color": "data(color)" },
+      },
       {
         selector: "edge",
         style: {
@@ -376,6 +382,8 @@
     var meta = d.kind === "symbol"
       ? ((d.symbolKind || "symbol") + (d.language ? " · " + d.language : ""))
       : (d.language || "file");
+    // A skipped file would otherwise read as an empty one.
+    if (d.notAnalysed) meta += " · not analysed: " + d.notAnalysed;
     tip.innerHTML = "<strong>" + esc(d.path || d.label) + "</strong>" +
       '<span class="tip-meta">' + esc(meta) + "</span>";
     tip.hidden = false;
