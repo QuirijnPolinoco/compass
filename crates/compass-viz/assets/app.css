@@ -225,6 +225,30 @@ body {
 }
 .legend-row .count { color: var(--faint); font-variant-numeric: tabular-nums; }
 .legend-more { color: var(--faint); padding-top: var(--s1); }
+/* Category hide/show: the same rows as the legend, as checkboxes. */
+.legend-filters {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--border);
+}
+#legend .legend-filters .legend-title { margin-bottom: var(--s1); }
+.legend-row.filter {
+  min-height: 24px;               /* WCAG 2.5.8 target size */
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+}
+.legend-row.filter:hover .name { color: var(--accent); }
+.legend-row.filter input {
+  flex: none;
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.legend-row.filter input:not(:checked) ~ .name { color: var(--faint); }
+.legend-row.filter input:focus-visible { outline: none; box-shadow: var(--ring); border-radius: 3px; }
 /* Note that a dotted, faded edge is a heuristic (guessed) link, not a certain one. */
 .legend-note {
   display: flex;

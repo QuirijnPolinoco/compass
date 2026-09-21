@@ -9,6 +9,9 @@ contain breaking changes).
 
 ### Added
 
+- The visual map can **hide and show file categories** (`code`, `markup`, and the supporting
+  types to come). The toggles are built from the categories present in the repository;
+  supporting categories start hidden, and your choice is remembered.
 - **Extensionless scripts are mapped** when their `#!` line names a supported language
   (`bin/cli` with `#!/usr/bin/env node`, `scripts/migrate` with `#!/usr/bin/env python3`). The
   extractors always declared their shebangs; the engine never read them.
