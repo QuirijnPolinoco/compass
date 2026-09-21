@@ -18,6 +18,8 @@ contain breaking changes).
 
 ### Fixed
 
+- The visual map froze for tens of seconds when **Symbols** was switched on. Only files go
+  through the force layout now; each file's symbols are placed in a cloud around it, instantly.
 - After upgrading Compass, files that had not changed kept the *previous* release's extraction
   (for example no call edges for an untouched TypeScript file after 0.7 → 0.8). Caches are now
   stamped with the release that wrote them and rebuilt on a mismatch.
