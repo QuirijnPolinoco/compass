@@ -51,7 +51,7 @@ Tier 2: Rust, Kotlin, Ruby, PHP, C
 Tier 3 (hard): C++ (shipped), Swift, F#
 Data / scientific: R (shipped)
 Web assets: CSS and HTML (shipped) — `@import` edges between stylesheets; `href`/`src` references from pages to mapped stylesheets, scripts and other pages; `.class` / `#id` / `--custom-property` / `@keyframes` names and element ids as symbols. Later: CSS class/ID *usage* across HTML, which needs a reference-type edge the core doesn't have yet.
-Supporting (non-code) files — data, contracts, build and CI: which types belong in the map, and the model changes they need first, are decided in ADR-0007 (docs/architecture/decisions/0007-supporting-files.md). SQL is part of that plan, designed around migration folders.
+Supporting (non-code) files — CSV/TSV shipped (header columns as symbols); data, contracts, build and CI to follow: which types belong in the map, and the model changes they need first, are decided in ADR-0007 (docs/architecture/decisions/0007-supporting-files.md). SQL is part of that plan, designed around migration folders.
 
 3. User Stories
 

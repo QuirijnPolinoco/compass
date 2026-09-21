@@ -9,6 +9,12 @@ contain breaking changes).
 
 ### Added
 
+- **CSV / TSV** — the first *supporting* file type (ADR-0007). A data file's header columns
+  become symbols, so `find_symbol("customer")` answers "which file has the customer data, and
+  is the column `Customer_Id` or `customerId`?" in one call. Only the header is ever read (a
+  2 GB export costs one line); delimiters (`,` `;` tab `|`), quoting, a BOM and `#` preambles
+  are handled; a file with no header row yields nothing. Data files stay out of every code
+  metric and are hidden in the map until switched on.
 - The visual map can **hide and show file categories** (`code`, `markup`, and the supporting
   types to come). The toggles are built from the categories present in the repository;
   supporting categories start hidden, and your choice is remembered.

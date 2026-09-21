@@ -105,6 +105,10 @@ fn fixture_ts_workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-ts-workspace")
 }
 
+fn fixture_csv() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-csv")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -397,6 +401,60 @@ fn deps_cross_a_workspace_package_boundary() {
     assert!(stdout.contains("apps/web/src/main.ts"), "stdout:\n{stdout}");
     assert!(
         stdout.contains("packages/shared/src/dates.ts"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn csv_files_are_supporting_files_not_a_language() {
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("overview")
+        .arg(fixture_csv())
+        .output()
+        .expect("run compass");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+
+    // report.py + two CSVs. The CSVs are counted apart from the languages, and their header
+    // columns are the symbols (3 + 3) next to the one Python function.
+    assert!(stdout.contains("files:        3"), "stdout:\n{stdout}");
+    assert!(stdout.contains("symbols:      7"), "stdout:\n{stdout}");
+    // Compare the sections, not the whole output: the fixture's own path contains "csv".
+    let (_, sections) = stdout
+        .split_once("  languages:")
+        .unwrap_or_else(|| panic!("no languages section:\n{stdout}"));
+    let (languages, supporting) = sections
+        .split_once("supporting files:")
+        .unwrap_or_else(|| panic!("no supporting section:\n{stdout}"));
+    assert!(languages.contains("python"), "stdout:\n{stdout}");
+    assert!(
+        !languages.contains("csv"),
+        "csv listed as a language:\n{stdout}"
+    );
+    assert!(
+        supporting.contains("csv          2 file(s)"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn mcp_finds_which_data_file_has_a_column() {
+    let stdout = mcp_session(
+        fixture_csv(),
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_symbol","arguments":{"name":"customer"}}}"#,
+        ],
+    );
+    // "What is the customer column called, and where?" — one call, both files, exact spelling.
+    assert!(stdout.contains("Customer_Id"), "stdout:\n{stdout}");
+    assert!(stdout.contains("data/customers.csv"), "stdout:\n{stdout}");
+    assert!(stdout.contains("data/orders.csv"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains(r#"\"kind\": \"Field\""#),
         "stdout:\n{stdout}"
     );
 }

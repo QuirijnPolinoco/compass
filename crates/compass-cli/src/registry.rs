@@ -53,5 +53,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-html")]
     registry.register(Box::new(compass_lang_html::HtmlExtractor));
 
+    #[cfg(feature = "lang-csv")]
+    registry.register(Box::new(compass_lang_csv::CsvExtractor));
+
     registry
 }

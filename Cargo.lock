@@ -129,6 +129,7 @@ dependencies = [
  "compass-lang-cpp",
  "compass-lang-csharp",
  "compass-lang-css",
+ "compass-lang-csv",
  "compass-lang-go",
  "compass-lang-html",
  "compass-lang-java",
@@ -218,6 +219,14 @@ dependencies = [
  "compass-extract",
  "tree-sitter",
  "tree-sitter-css",
+]
+
+[[package]]
+name = "compass-lang-csv"
+version = "0.8.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
 ]
 
 [[package]]
