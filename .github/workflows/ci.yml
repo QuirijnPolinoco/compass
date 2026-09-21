@@ -44,6 +44,7 @@ jobs:
           - { feature: lang-css, lang: css }
           - { feature: lang-html, lang: html }
           - { feature: lang-csv, lang: csv }
+          - { feature: lang-json, lang: json }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

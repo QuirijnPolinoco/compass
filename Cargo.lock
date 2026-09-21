@@ -133,6 +133,7 @@ dependencies = [
  "compass-lang-go",
  "compass-lang-html",
  "compass-lang-java",
+ "compass-lang-json",
  "compass-lang-kotlin",
  "compass-lang-php",
  "compass-lang-python",
@@ -257,6 +258,16 @@ dependencies = [
  "compass-extract",
  "tree-sitter",
  "tree-sitter-java",
+]
+
+[[package]]
+name = "compass-lang-json"
+version = "0.8.0"
+dependencies = [
+ "compass-core",
+ "compass-extract",
+ "tree-sitter",
+ "tree-sitter-json",
 ]
 
 [[package]]
@@ -1377,6 +1388,16 @@ name = "tree-sitter-java"
 version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0aa6cbcdc8c679b214e616fd3300da67da0e492e066df01bcf5a5921a71e90d6"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-json"
+version = "0.24.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d727acca406c0020cffc6cf35516764f36c8e3dc4408e5ebe2cb35a947ec471"
 dependencies = [
  "cc",
  "tree-sitter-language",

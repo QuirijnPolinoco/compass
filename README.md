@@ -85,6 +85,8 @@ content — and stay out of every code metric (hidden in the map until you switc
 | File type | What is indexed |
 |---|---|
 | CSV / TSV | The header's column names — `find_symbol("customer")` tells you which file has a `Customer_Id` column, and how it's spelled |
+| JSON — API descriptions | OpenAPI / Swagger endpoints (`GET /users/{id}`), operation ids, schema names and properties (`User.email`); JSON Schema definitions; Postman requests. Recognised by content, not file name |
+| JSON — data | The keys of its records (the first object of an array, including one nested under a key) |
 
 Adding a language is a self-contained unit of work behind a stable interface — see
 [CONTRIBUTING.md](CONTRIBUTING.md). More are on the roadmap in [`ProjectInfo.md`](ProjectInfo.md).

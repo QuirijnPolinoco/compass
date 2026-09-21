@@ -56,5 +56,8 @@ pub fn register_all() -> Registry {
     #[cfg(feature = "lang-csv")]
     registry.register(Box::new(compass_lang_csv::CsvExtractor));
 
+    #[cfg(feature = "lang-json")]
+    registry.register(Box::new(compass_lang_json::JsonExtractor));
+
     registry
 }
