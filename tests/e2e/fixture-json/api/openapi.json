@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Shop API", "version": "1.0.0" },
+  "paths": {
+    "/customers/{id}": {
+      "get": { "operationId": "getCustomer", "summary": "Fetch one customer" }
+    },
+    "/orders": {
+      "post": { "operationId": "createOrder", "summary": "Place an order" }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Customer": {
+        "type": "object",
+        "properties": {
+          "Customer_Id": { "type": "integer" },
+          "email": { "type": "string" }
+        }
+      }
+    }
+  }
+}

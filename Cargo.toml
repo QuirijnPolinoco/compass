@@ -22,6 +22,7 @@ members = [
     "crates/compass-lang-css",
     "crates/compass-lang-html",
     "crates/compass-lang-csv",
+    "crates/compass-lang-json",
 ]
 # The new-language skeleton is intentionally NOT a workspace member: it must never
 # link into the binary, register a fake language, or gate `cargo build --workspace`.
@@ -68,6 +69,7 @@ tree-sitter-cpp = "0.23"
 tree-sitter-r = "1.3.0"
 tree-sitter-css = "0.25.0"
 tree-sitter-html = "0.23.2"
+tree-sitter-json = "0.24.8"
 
 [profile.release]
 # Release binary is the shipped artifact (A2). LTO + 1 codegen unit for size/speed;

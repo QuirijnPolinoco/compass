@@ -109,6 +109,10 @@ fn fixture_csv() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-csv")
 }
 
+fn fixture_json() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-json")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -437,6 +441,28 @@ fn csv_files_are_supporting_files_not_a_language() {
         supporting.contains("csv          2 file(s)"),
         "stdout:\n{stdout}"
     );
+}
+
+#[test]
+fn mcp_finds_an_api_endpoint_and_the_code_that_reads_a_json_file() {
+    let stdout = mcp_session(
+        fixture_json(),
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_symbol","arguments":{"name":"/customers"}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"find_symbol","arguments":{"name":"customer_id"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"impact","arguments":{"file":"data/customers.json"}}}"#,
+        ],
+    );
+    // "What is the customers endpoint?" — the method + path, from the OpenAPI description.
+    assert!(stdout.contains("GET /customers/{id}"), "stdout:\n{stdout}");
+    assert!(stdout.contains("api/openapi.json"), "stdout:\n{stdout}");
+    // "What is the field called?" — in the schema and in the data, same spelling.
+    assert!(stdout.contains("Customer.Customer_Id"), "stdout:\n{stdout}");
+    assert!(stdout.contains("data/customers.json"), "stdout:\n{stdout}");
+    // "What reads this data file?" — the TypeScript import of it is now a real edge.
+    assert!(stdout.contains("src/load.ts"), "stdout:\n{stdout}");
 }
 
 #[test]

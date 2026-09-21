@@ -9,6 +9,12 @@ contain breaking changes).
 
 ### Added
 
+- **JSON** catalog. API descriptions are recognised by their content — OpenAPI / Swagger
+  (`GET /users/{id}`, operation ids, schemas and `User.email`-style properties), JSON Schema and
+  Postman collections — so an assistant can look an endpoint or a field name up instead of
+  inventing it. Any other JSON contributes the keys of its records. Values are never indexed.
+  Because `.json` files are now mapped, a TypeScript `import data from "./data.json"` becomes a
+  real edge, and `impact` on a data file answers "what reads this?".
 - **CSV / TSV** — the first *supporting* file type (ADR-0007). A data file's header columns
   become symbols, so `find_symbol("customer")` answers "which file has the customer data, and
   is the column `Customer_Id` or `customerId`?" in one call. Only the header is ever read (a
