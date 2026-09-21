@@ -24,6 +24,12 @@ impl Extractor for JavaExtractor {
         LanguageId::new("java")
     }
 
+    /// Java and Kotlin compile to the same classes and call each other directly, so they share
+    /// one call namespace.
+    fn call_namespace(&self) -> String {
+        "jvm".to_string()
+    }
+
     fn detection(&self) -> Detection {
         Detection {
             extensions: &["java"],

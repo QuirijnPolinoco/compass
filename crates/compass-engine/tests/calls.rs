@@ -208,3 +208,64 @@ fn resolves_typescript_calls_across_files() {
         ]
     );
 }
+
+/// Index `dir` with the Rust and TypeScript extractors registered together.
+fn index_rust_and_typescript(dir: &std::path::Path) -> Graph {
+    let mut registry = Registry::new();
+    registry.register(Box::new(compass_lang_rust::RustExtractor));
+    registry.register(Box::new(compass_lang_typescript::TypeScriptExtractor));
+    compass_engine::index(dir, &registry).expect("index")
+}
+
+#[test]
+fn a_call_never_resolves_to_a_symbol_of_another_language() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-cross-language");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // `helper` exists exactly once in the repo — but in TypeScript. The Rust call must not
+    // link to it just because the name is globally unique.
+    std::fs::write(dir.join("a.rs"), "fn alpha() { helper(); }\n").unwrap();
+    std::fs::write(dir.join("util.ts"), "export function helper() {}\n").unwrap();
+
+    assert_eq!(readable_calls(&index_rust_and_typescript(&dir)), vec![]);
+}
+
+#[test]
+fn another_languages_symbol_does_not_make_a_unique_name_ambiguous() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-cross-language-ambiguity");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // `shared` is unique among the Rust files, so alpha -> b.rs::shared is a valid edge. A
+    // TypeScript `shared` must not turn it ambiguous and silently delete that edge.
+    std::fs::write(dir.join("a.rs"), "fn alpha() { shared(); }\n").unwrap();
+    std::fs::write(dir.join("b.rs"), "fn shared() {}\n").unwrap();
+    std::fs::write(dir.join("web.ts"), "export function shared() {}\n").unwrap();
+
+    assert_eq!(
+        readable_calls(&index_rust_and_typescript(&dir)),
+        vec![("alpha".to_string(), "b.rs::shared".to_string())]
+    );
+}
+
+#[test]
+fn languages_sharing_a_call_namespace_resolve_into_each_other() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-shared-namespace");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // C++ calling a C function is ordinary; C and C++ declare the same call namespace.
+    std::fs::write(dir.join("legacy.c"), "int checksum(int x) { return x; }\n").unwrap();
+    std::fs::write(dir.join("app.cpp"), "int run() { return checksum(1); }\n").unwrap();
+
+    let mut registry = Registry::new();
+    registry.register(Box::new(compass_lang_c::CExtractor));
+    registry.register(Box::new(compass_lang_cpp::CppExtractor));
+    let graph = compass_engine::index(&dir, &registry).expect("index");
+
+    assert_eq!(
+        readable_calls(&graph),
+        vec![("run".to_string(), "legacy.c::checksum".to_string())]
+    );
+}

@@ -18,6 +18,9 @@ contain breaking changes).
 
 ### Fixed
 
+- A call could be linked to a same-named symbol in a **different language**, and a symbol added
+  in one language could make a unique name in another ambiguous and silently drop a correct
+  call edge. Calls now resolve within the caller's language (C/C++ and Java/Kotlin share one).
 - The visual map froze for tens of seconds when **Symbols** was switched on. Only files go
   through the force layout now; each file's symbols are placed in a cloud around it, instantly.
 - After upgrading Compass, files that had not changed kept the *previous* release's extraction

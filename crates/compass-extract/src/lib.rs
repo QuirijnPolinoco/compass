@@ -132,6 +132,14 @@ pub trait ResolutionContext {
 pub trait Extractor: Send + Sync {
     fn language_id(&self) -> LanguageId;
     fn detection(&self) -> Detection;
+    /// The namespace this language's calls resolve in. A call only ever links to a symbol
+    /// from the same namespace, so a Python `build()` can't be matched to a Go `build` — and,
+    /// just as important, a name that is unique *within* a language stays resolvable no matter
+    /// what other languages define. Defaults to the language itself; languages that really do
+    /// call into each other (C and C++, Java and Kotlin) return a shared name.
+    fn call_namespace(&self) -> String {
+        self.language_id().as_str().to_string()
+    }
     /// The tree-sitter grammar for this language.
     fn grammar(&self) -> Language;
     /// Phase 1 (per file): pull symbols + raw import specifiers from a parsed tree.
