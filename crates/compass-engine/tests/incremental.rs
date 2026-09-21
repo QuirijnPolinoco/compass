@@ -225,3 +225,59 @@ fn an_extensionless_script_is_mapped_by_its_shebang_and_reused_from_cache() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn oversized_and_minified_files_are_nodes_without_contents() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-not-analysed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let ts_function = |name: &str| format!("export function {name}() {{}}\n");
+    std::fs::write(
+        dir.join("app.ts"),
+        "import \"./vendor.min.js\";\n".to_string() + &ts_function("app"),
+    )
+    .unwrap();
+    // Minified by name.
+    std::fs::write(dir.join("vendor.min.js"), ts_function("vendored")).unwrap();
+    // Minified by content: one ~40 KB line under an ordinary name.
+    std::fs::write(dir.join("bundle.js"), "function a(){}".repeat(3000)).unwrap();
+    // Over the size cap: many ordinary short lines.
+    std::fs::write(dir.join("generated.ts"), ts_function("gen").repeat(60_000)).unwrap();
+
+    let mut registry = Registry::new();
+    registry.register(Box::new(compass_lang_typescript::TypeScriptExtractor));
+    let (graph, cache) = compass_engine::index_incremental(&dir, &registry, None).unwrap();
+
+    let reason = |path: &str| -> Option<String> {
+        graph
+            .files()
+            .iter()
+            .find(|f| f.path == Path::new(path))
+            .unwrap_or_else(|| panic!("{path} must still be a node"))
+            .not_analysed
+            .clone()
+    };
+    assert_eq!(reason("app.ts"), None);
+    assert_eq!(reason("vendor.min.js").as_deref(), Some("minified"));
+    assert_eq!(reason("bundle.js").as_deref(), Some("minified"));
+    assert!(reason("generated.ts").is_some_and(|r| r.starts_with("too large")));
+
+    // Only the analysed file contributes symbols — but its import of the skipped file is
+    // still a real edge, because the skipped file is still a node.
+    assert_eq!(symbol_names(&graph), ["app"]);
+    assert_eq!(graph.imports().len(), 1);
+
+    // The reason survives a cached re-index (the skipped files are not re-read either).
+    let (again, _) = compass_engine::index_incremental(&dir, &registry, Some(&cache)).unwrap();
+    assert_eq!(
+        again
+            .files()
+            .iter()
+            .filter(|f| f.not_analysed.is_some())
+            .count(),
+        3
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

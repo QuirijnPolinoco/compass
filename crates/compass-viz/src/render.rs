@@ -52,6 +52,9 @@ struct NodeData {
     /// The file's category (`code`, `markup`, `data`, …) — the map builds its hide/show
     /// toggles from the categories present, so none is hard-coded in the front-end.
     category: String,
+    /// Why the file's contents were skipped (too large, minified), for the tooltip.
+    #[serde(rename = "notAnalysed", skip_serializing_if = "Option::is_none")]
+    not_analysed: Option<String>,
     #[serde(rename = "symbolKind", skip_serializing_if = "Option::is_none")]
     symbol_kind: Option<&'static str>,
     /// Structural community id (ADR-0005) — the default coloring.
@@ -139,6 +142,7 @@ fn elements_of(view: &GraphView) -> Elements {
                 path: n.path.clone(),
                 language: n.language.clone(),
                 category: n.category.clone(),
+                not_analysed: n.not_analysed.clone(),
                 symbol_kind: n.symbol_kind.map(symbol_kind_str),
                 group: n.group,
                 is_hub: n.is_hub,
@@ -216,6 +220,7 @@ mod tests {
             path: path.to_string(),
             language: Some("rust".to_string()),
             category: "code".to_string(),
+            not_analysed: None,
             symbol_kind: None,
             group,
             is_hub: false,

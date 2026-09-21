@@ -25,6 +25,8 @@ struct Parsed {
     symbols: Vec<ExtractedSymbol>,
     imports: Vec<RawImport>,
     calls: Vec<RawCall>,
+    /// Why the contents were skipped, if they were (see [`skip_reason`]).
+    not_analysed: Option<String>,
     mtime_ns: u64,
     size: u64,
 }
@@ -41,6 +43,9 @@ pub struct CachedFile {
     pub symbols: Vec<ExtractedSymbol>,
     pub imports: Vec<RawImport>,
     pub calls: Vec<RawCall>,
+    /// Why the contents were skipped, if they were. Absent in older caches → analysed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_analysed: Option<String>,
 }
 
 /// Repo-relative path → its last phase-1 extraction. Persisted by the `cache` module and fed
@@ -95,6 +100,9 @@ pub fn index_incremental(
     for p in &parsed {
         let category = categories.get(&p.language).cloned().unwrap_or_default();
         let fid = graph.add_file_in(p.rel.clone(), p.language.clone(), category, p.hash);
+        if let Some(reason) = &p.not_analysed {
+            graph.mark_not_analysed(fid, reason.clone());
+        }
         let mut ids = Vec::with_capacity(p.symbols.len());
         for s in &p.symbols {
             ids.push(graph.add_symbol(s.name.clone(), s.kind, fid, s.span));
@@ -176,6 +184,7 @@ pub fn index_incremental(
                 symbols: p.symbols,
                 imports: p.imports,
                 calls: p.calls,
+                not_analysed: p.not_analysed,
             },
         );
     }
@@ -212,6 +221,7 @@ fn reuse_or_parse(
                     symbols: cf.symbols.clone(),
                     imports: cf.imports.clone(),
                     calls: cf.calls.clone(),
+                    not_analysed: cf.not_analysed.clone(),
                     mtime_ns: w.mtime_ns,
                     size: w.size,
                 });
@@ -255,13 +265,81 @@ fn first_line(path: &Path) -> Option<String> {
     text.lines().next().map(str::to_string)
 }
 
+/// Largest file whose contents are analysed. Source files people write are far smaller; what
+/// exceeds this is generated, vendored or data, and parsing it costs seconds and floods the map
+/// with thousands of meaningless symbols. Fixed rather than configurable: zero config is the
+/// product (ADR-0007 §3).
+const MAX_ANALYSED_BYTES: u64 = 1024 * 1024;
+
+/// A line this long, on average, is not something a person wrote.
+const MINIFIED_AVG_LINE_BYTES: usize = 500;
+/// Don't judge tiny files by their line length (a one-line JSON config is fine).
+const MINIFIED_MIN_BYTES: usize = 20 * 1024;
+
+/// Lockfiles: machine-written, huge, and never the answer to a navigation question.
+const LOCKFILES: [&str; 9] = [
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Cargo.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "go.sum",
+];
+
+/// Why a file that *is* a mapped type should not have its contents analysed — judged from its
+/// name and size alone, before it is read. Language-agnostic: these are conventions of how
+/// files get generated, not of any language.
+fn skip_reason(w: &Walked) -> Option<String> {
+    let name = w.rel.file_name()?.to_string_lossy();
+    if LOCKFILES.contains(&name.as_ref()) {
+        return Some("lockfile".to_string());
+    }
+    // `app.min.js`, `site.min.css`, `vendor.bundle.min.js`.
+    if name.contains(".min.") {
+        return Some("minified".to_string());
+    }
+    (w.size > MAX_ANALYSED_BYTES).then(|| format!("too large ({} KB)", w.size / 1024))
+}
+
+/// Minified content under an ordinary name (`cytoscape.js` that is one 400 KB line).
+fn looks_minified(bytes: &[u8]) -> bool {
+    if bytes.len() < MINIFIED_MIN_BYTES {
+        return false;
+    }
+    let lines = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
+    bytes.len() / lines > MINIFIED_AVG_LINE_BYTES
+}
+
 fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
     let extractor = if registry.needs_first_line(&w.rel) {
         registry.detect(&w.rel, first_line(&w.abs).as_deref())?
     } else {
         registry.detect(&w.rel, None)?
     };
+    // Still a node — so an import of it resolves to a real file — but with nothing inside.
+    let skipped = |reason: String, hash: u64| Parsed {
+        rel: w.rel.clone(),
+        language: extractor.language_id(),
+        hash,
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        calls: Vec::new(),
+        not_analysed: Some(reason),
+        mtime_ns: w.mtime_ns,
+        size: w.size,
+    };
+    if let Some(reason) = skip_reason(w) {
+        // Not even read: the fingerprint stands in for a content hash.
+        return Some(skipped(reason, w.mtime_ns ^ w.size));
+    }
+
     let bytes = std::fs::read(&w.abs).ok()?;
+    if looks_minified(&bytes) {
+        return Some(skipped("minified".to_string(), content_hash(&bytes)));
+    }
     let grammar = extractor.grammar();
     let tree = compass_extract::parse(&grammar, &bytes)?;
     let extraction = extractor.extract(&bytes, &tree);
@@ -272,6 +350,7 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         symbols: extraction.symbols,
         imports: extraction.imports,
         calls: extraction.calls,
+        not_analysed: None,
         mtime_ns: w.mtime_ns,
         size: w.size,
     })
