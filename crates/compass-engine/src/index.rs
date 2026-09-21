@@ -9,7 +9,8 @@ use compass_core::{
     Diagnostic, DiagnosticKind, EdgeConfidence, FileCategory, FileId, Graph, LanguageId, SymbolId,
 };
 use compass_extract::{
-    ExtractedSymbol, LangConfig, RawCall, RawImport, Registry, ResolutionContext, ResolvedImport,
+    ExtractedSymbol, LangConfig, Parsing, RawCall, RawImport, Registry, ResolutionContext,
+    ResolvedImport,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -291,8 +292,9 @@ const LOCKFILES: [&str; 9] = [
 
 /// Why a file that *is* a mapped type should not have its contents analysed — judged from its
 /// name and size alone, before it is read. Language-agnostic: these are conventions of how
-/// files get generated, not of any language.
-fn skip_reason(w: &Walked) -> Option<String> {
+/// files get generated, not of any language. `whole_file` is false for extractors that only
+/// read the top of a file ([`Parsing::Head`]), which makes its size irrelevant.
+fn skip_reason(w: &Walked, whole_file: bool) -> Option<String> {
     let name = w.rel.file_name()?.to_string_lossy();
     if LOCKFILES.contains(&name.as_ref()) {
         return Some("lockfile".to_string());
@@ -301,7 +303,19 @@ fn skip_reason(w: &Walked) -> Option<String> {
     if name.contains(".min.") {
         return Some("minified".to_string());
     }
-    (w.size > MAX_ANALYSED_BYTES).then(|| format!("too large ({} KB)", w.size / 1024))
+    (whole_file && w.size > MAX_ANALYSED_BYTES).then(|| format!("too large ({} KB)", w.size / 1024))
+}
+
+/// The first `max_bytes` of a file (fewer if it is shorter).
+fn read_head(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(max_bytes as u64)
+        .read_to_end(&mut head)
+        .ok()?;
+    Some(head)
 }
 
 /// Minified content under an ordinary name (`cytoscape.js` that is one 400 KB line).
@@ -331,22 +345,31 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         mtime_ns: w.mtime_ns,
         size: w.size,
     };
-    if let Some(reason) = skip_reason(w) {
-        // Not even read: the fingerprint stands in for a content hash.
-        return Some(skipped(reason, w.mtime_ns ^ w.size));
+    // When the file isn't read in full, its fingerprint stands in for a content hash.
+    let fingerprint = w.mtime_ns ^ w.size;
+    let parsing = extractor.parsing();
+    if let Some(reason) = skip_reason(w, matches!(parsing, Parsing::Grammar(_))) {
+        return Some(skipped(reason, fingerprint));
     }
 
-    let bytes = std::fs::read(&w.abs).ok()?;
-    if looks_minified(&bytes) {
-        return Some(skipped("minified".to_string(), content_hash(&bytes)));
-    }
-    let grammar = extractor.grammar();
-    let tree = compass_extract::parse(&grammar, &bytes)?;
-    let extraction = extractor.extract(&bytes, &tree);
+    let (extraction, hash) = match parsing {
+        Parsing::Head { max_bytes } => {
+            let head = read_head(&w.abs, max_bytes)?;
+            (extractor.extract_head(&head), fingerprint)
+        }
+        Parsing::Grammar(grammar) => {
+            let bytes = std::fs::read(&w.abs).ok()?;
+            if looks_minified(&bytes) {
+                return Some(skipped("minified".to_string(), content_hash(&bytes)));
+            }
+            let tree = compass_extract::parse(&grammar, &bytes)?;
+            (extractor.extract(&bytes, &tree), content_hash(&bytes))
+        }
+    };
     Some(Parsed {
         rel: w.rel.clone(),
         language: extractor.language_id(),
-        hash: content_hash(&bytes),
+        hash,
         symbols: extraction.symbols,
         imports: extraction.imports,
         calls: extraction.calls,

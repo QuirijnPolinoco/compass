@@ -131,6 +131,9 @@ pub enum SymbolKind {
     Constant,
     Variable,
     Module,
+    /// A named field of a record — a CSV column, a JSON key, a schema property (ADR-0007's
+    /// catalog tier). What a developer looks up to learn what a piece of data is *called*.
+    Field,
     Other,
 }
 

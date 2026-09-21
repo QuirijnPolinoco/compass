@@ -117,6 +117,7 @@ fn symbol_kind_str(kind: SymbolKind) -> &'static str {
         SymbolKind::Constant => "constant",
         SymbolKind::Variable => "variable",
         SymbolKind::Module => "module",
+        SymbolKind::Field => "field",
         SymbolKind::Other => "other",
     }
 }
