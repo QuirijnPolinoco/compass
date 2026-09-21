@@ -1,6 +1,6 @@
 # ADR-0007: supporting (non-code) files — two tiers, one category, no generic extensions
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-21
 - **Deciders:** Quinn (QuirijnVanDerZanden)
 

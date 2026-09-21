@@ -9,7 +9,7 @@
 > [ADR-0004 (serde & cache format)](decisions/0004-serde-placement-and-cache-format-versioning.md) ·
 > [ADR-0005 (visualization & local server)](decisions/0005-visualization-subsystem-and-local-server.md) ·
 > [ADR-0006 (context pre-injection)](decisions/0006-context-pre-injection.md) ·
-> [ADR-0007 (supporting files — *proposed*)](decisions/0007-supporting-files.md)
+> [ADR-0007 (supporting files)](decisions/0007-supporting-files.md)
 >
 > Structure validated by an independent architect review (2026-06-17); the refinements it
 > produced are incorporated here. The visualization subsystem (`compass-viz`, the `compass map`
