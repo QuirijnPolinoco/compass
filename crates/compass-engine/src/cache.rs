@@ -13,6 +13,13 @@ use crate::index::ExtractionCache;
 /// v3: import/call edges gained a trailing `EdgeConfidence` (the serialized tuple shape changed).
 pub const CACHE_FORMAT_VERSION: u32 = 3;
 
+/// The Compass release that wrote a cache file. Extractors improve between releases without the
+/// on-disk *format* changing (a language starts emitting calls, a new kind of symbol, …), and an
+/// unchanged file is never re-read — so a cache from another release would pin its files to that
+/// release's view of them forever. A producer mismatch is therefore treated like a format
+/// mismatch: discard and reindex. (Every workspace crate shares one version.)
+const PRODUCER: &str = env!("CARGO_PKG_VERSION");
+
 const CACHE_DIR: &str = ".compass";
 const CACHE_FILE: &str = "graph.json";
 const EXTRACTIONS_FILE: &str = "extractions.json";
@@ -20,12 +27,16 @@ const EXTRACTIONS_FILE: &str = "extractions.json";
 #[derive(Serialize)]
 struct CacheOut<'a> {
     version: u32,
+    producer: &'a str,
     graph: &'a Graph,
 }
 
 #[derive(Deserialize)]
 struct CacheIn {
     version: u32,
+    /// Absent in caches written before the producer stamp existed → never matches.
+    #[serde(default)]
+    producer: String,
     graph: Graph,
 }
 
@@ -35,6 +46,7 @@ pub fn save(repo_root: &Path, graph: &Graph) -> anyhow::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let json = serde_json::to_vec_pretty(&CacheOut {
         version: CACHE_FORMAT_VERSION,
+        producer: PRODUCER,
         graph,
     })?;
     std::fs::write(dir.join(CACHE_FILE), json)?;
@@ -48,14 +60,14 @@ pub fn exists(repo_root: &Path) -> bool {
     repo_root.join(CACHE_DIR).join(CACHE_FILE).exists()
 }
 
-/// Load the cached graph, or `None` if absent, unreadable, or a stale format version
-/// (caller should then reindex). Transient indices are rebuilt before returning.
+/// Load the cached graph, or `None` if absent, unreadable, a stale format version, or written
+/// by another Compass release (caller should then reindex). Transient indices are rebuilt before returning.
 pub fn load(repo_root: &Path) -> Option<Graph> {
     let path = repo_root.join(CACHE_DIR).join(CACHE_FILE);
     let bytes = std::fs::read(path).ok()?;
     let parsed: CacheIn = serde_json::from_slice(&bytes).ok()?;
-    if parsed.version != CACHE_FORMAT_VERSION {
-        return None; // stale format → reindex
+    if parsed.version != CACHE_FORMAT_VERSION || parsed.producer != PRODUCER {
+        return None; // stale format, or another release's view of the repo → reindex
     }
     let mut graph = parsed.graph;
     graph.reindex();
@@ -65,12 +77,15 @@ pub fn load(repo_root: &Path) -> Option<Graph> {
 #[derive(Serialize)]
 struct ExtractionsOut<'a> {
     version: u32,
+    producer: &'a str,
     extractions: &'a ExtractionCache,
 }
 
 #[derive(Deserialize)]
 struct ExtractionsIn {
     version: u32,
+    #[serde(default)]
+    producer: String,
     extractions: ExtractionCache,
 }
 
@@ -81,17 +96,20 @@ pub fn save_extractions(repo_root: &Path, extractions: &ExtractionCache) -> anyh
     std::fs::create_dir_all(&dir)?;
     let json = serde_json::to_vec(&ExtractionsOut {
         version: CACHE_FORMAT_VERSION,
+        producer: PRODUCER,
         extractions,
     })?;
     std::fs::write(dir.join(EXTRACTIONS_FILE), json)?;
     Ok(())
 }
 
-/// Load the per-file extraction cache, or `None` if absent, unreadable, or a stale version
-/// (the caller then does a full index, which is always correct — just slower).
+/// Load the per-file extraction cache, or `None` if absent, unreadable, a stale version, or
+/// written by another Compass release (the caller then does a full index, which is always
+/// correct — just slower).
 pub fn load_extractions(repo_root: &Path) -> Option<ExtractionCache> {
     let path = repo_root.join(CACHE_DIR).join(EXTRACTIONS_FILE);
     let bytes = std::fs::read(path).ok()?;
     let parsed: ExtractionsIn = serde_json::from_slice(&bytes).ok()?;
-    (parsed.version == CACHE_FORMAT_VERSION).then_some(parsed.extractions)
+    (parsed.version == CACHE_FORMAT_VERSION && parsed.producer == PRODUCER)
+        .then_some(parsed.extractions)
 }
