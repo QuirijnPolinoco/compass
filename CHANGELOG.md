@@ -9,6 +9,11 @@ contain breaking changes).
 
 ### Added
 
+- **Extensionless scripts are mapped** when their `#!` line names a supported language
+  (`bin/cli` with `#!/usr/bin/env node`, `scripts/migrate` with `#!/usr/bin/env python3`). The
+  extractors always declared their shebangs; the engine never read them.
+- Extractors can claim **exact file names** (groundwork for `package.json`, `Dockerfile`, … —
+  ADR-0007); a name claim beats an extension claim.
 - TypeScript/JS: imports of **in-repo packages by name** (`@acme/shared` in an npm, pnpm, Yarn
   or Lerna workspace) now resolve to the package's source, so dependencies and blast radius
   cross package boundaries. `package.json` is read as resolver input; build-output entries

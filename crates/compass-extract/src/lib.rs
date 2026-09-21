@@ -132,6 +132,14 @@ pub trait ResolutionContext {
 pub trait Extractor: Send + Sync {
     fn language_id(&self) -> LanguageId;
     fn detection(&self) -> Detection;
+    /// Exact file names this extractor claims (`package.json`, `Dockerfile`), for file types that
+    /// are identified by *name* rather than extension (ADR-0007 §3). A file-name claim beats any
+    /// extension claim, whichever extractor makes it, so a manifest extractor can own
+    /// `package.json` without anyone claiming `.json`. Exact names only — no globs — so what a
+    /// build maps stays predictable. Defaults to none.
+    fn filenames(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// What kind of file this extractor maps (ADR-0007). Defaults to source code. Anything that
     /// is not [code-like](FileCategory::is_code_like) is a *supporting* file: it is in the map
     /// and searchable, but never counts as a dependent, a hub or a cycle member.
@@ -193,8 +201,31 @@ impl Registry {
         self.extractors.iter().map(|e| e.language_id()).collect()
     }
 
-    /// Pick the extractor for a file by extension first, then by shebang first line.
+    /// The registered extractor for `language`, if this build has one.
+    pub fn extractor_for(&self, language: &LanguageId) -> Option<&dyn Extractor> {
+        self.extractors
+            .iter()
+            .find(|e| &e.language_id() == language)
+            .map(|e| e.as_ref())
+    }
+
+    /// Whether `path` can only be identified by its `#!` line: no extractor claims its name or
+    /// extension, and it has no extension at all (`bin/deploy`, `scripts/migrate`). These are
+    /// the only files whose first line is worth reading.
+    pub fn needs_first_line(&self, path: &Path) -> bool {
+        path.extension().is_none() && self.detect(path, None).is_none()
+    }
+
+    /// Pick the extractor for a file: by exact file name first (across *all* extractors, so a
+    /// name claim beats an extension claim), then by extension, then by shebang first line.
     pub fn detect(&self, path: &Path, first_line: Option<&str>) -> Option<&dyn Extractor> {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            for e in &self.extractors {
+                if e.filenames().contains(&name) {
+                    return Some(e.as_ref());
+                }
+            }
+        }
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             for e in &self.extractors {
                 if e.detection().extensions.contains(&ext) {
@@ -330,5 +361,127 @@ pub mod testing {
             Some((dir, _)) => PathBuf::from(dir),
             None => PathBuf::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A detection-only test double: `detect` never parses, so the rest is unreachable.
+    struct Fake {
+        id: &'static str,
+        extensions: &'static [&'static str],
+        shebangs: &'static [&'static str],
+        filenames: &'static [&'static str],
+    }
+
+    impl Extractor for Fake {
+        fn language_id(&self) -> LanguageId {
+            LanguageId::new(self.id)
+        }
+        fn detection(&self) -> Detection {
+            Detection {
+                extensions: self.extensions,
+                shebangs: self.shebangs,
+            }
+        }
+        fn filenames(&self) -> &'static [&'static str] {
+            self.filenames
+        }
+        fn grammar(&self) -> Language {
+            unreachable!("detection never parses")
+        }
+        fn extract(&self, _: &[u8], _: &Tree) -> Extraction {
+            unreachable!("detection never parses")
+        }
+        fn resolve(
+            &self,
+            _: &[RawImport],
+            _: &dyn ResolutionContext,
+            _: &LangConfig,
+        ) -> Vec<ResolvedImport> {
+            unreachable!("detection never parses")
+        }
+    }
+
+    fn registry() -> Registry {
+        let mut registry = Registry::new();
+        // Registered FIRST and claims the extension: a later file-name claim must still win.
+        registry.register(Box::new(Fake {
+            id: "json",
+            extensions: &["json"],
+            shebangs: &[],
+            filenames: &[],
+        }));
+        registry.register(Box::new(Fake {
+            id: "npm",
+            extensions: &[],
+            shebangs: &[],
+            filenames: &["package.json"],
+        }));
+        registry.register(Box::new(Fake {
+            id: "shell",
+            extensions: &["sh"],
+            shebangs: &["bash", "/sh"],
+            filenames: &[],
+        }));
+        registry
+    }
+
+    fn detected(registry: &Registry, path: &str, first_line: Option<&str>) -> Option<String> {
+        registry
+            .detect(Path::new(path), first_line)
+            .map(|e| e.language_id().to_string())
+    }
+
+    #[test]
+    fn a_file_name_claim_beats_an_extension_claim() {
+        let r = registry();
+        assert_eq!(
+            detected(&r, "web/package.json", None).as_deref(),
+            Some("npm")
+        );
+        assert_eq!(
+            detected(&r, "data/users.json", None).as_deref(),
+            Some("json")
+        );
+        // Exact names only: no prefix, suffix or case games.
+        assert_eq!(detected(&r, "package.json.bak", None), None);
+        assert_eq!(
+            detected(&r, "my-package.json", None).as_deref(),
+            Some("json")
+        );
+    }
+
+    #[test]
+    fn a_shebang_identifies_an_extensionless_script() {
+        let r = registry();
+        assert_eq!(
+            detected(&r, "bin/deploy", Some("#!/usr/bin/env bash")).as_deref(),
+            Some("shell")
+        );
+        assert_eq!(
+            detected(&r, "bin/deploy", Some("#!/bin/sh")).as_deref(),
+            Some("shell")
+        );
+        assert_eq!(detected(&r, "bin/deploy", Some("echo bash")), None); // not a #! line
+        assert_eq!(detected(&r, "LICENSE", None), None);
+    }
+
+    #[test]
+    fn only_unclaimed_extensionless_files_need_their_first_line_read() {
+        let r = registry();
+        assert!(r.needs_first_line(Path::new("bin/deploy")));
+        assert!(!r.needs_first_line(Path::new("run.sh"))); // extension claimed
+        assert!(!r.needs_first_line(Path::new("notes.txt"))); // has an extension: never a script
+        assert!(!r.needs_first_line(Path::new("package.json"))); // name claimed
+    }
+
+    #[test]
+    fn extractor_for_finds_a_registered_language() {
+        let r = registry();
+        assert!(r.extractor_for(&LanguageId::new("npm")).is_some());
+        assert!(r.extractor_for(&LanguageId::new("cobol")).is_none());
     }
 }

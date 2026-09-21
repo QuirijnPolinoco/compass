@@ -128,7 +128,9 @@ pub fn index_incremental(
     let resolve_t = PhaseTimer::start("resolve-imports");
     let config = LangConfig;
     for p in &parsed {
-        let Some(extractor) = registry.detect(&p.rel, None) else {
+        // By language, not by re-detecting the path: a shebang-detected file has no extension
+        // to detect it by.
+        let Some(extractor) = registry.extractor_for(&p.language) else {
             continue;
         };
         let fid = by_path[&p.rel];
@@ -193,9 +195,15 @@ fn reuse_or_parse(
 ) -> Option<Parsed> {
     if w.mtime_ns != 0 {
         if let Some(cf) = prev.and_then(|p| p.get(w.rel.to_string_lossy().as_ref())) {
-            let same_language = registry
-                .detect(&w.rel, None)
-                .is_some_and(|e| e.language_id() == cf.language);
+            // A file that can only be identified by its `#!` line is trusted to still be what
+            // it was (its fingerprint is unchanged) as long as this build has that language.
+            let same_language = if registry.needs_first_line(&w.rel) {
+                registry.extractor_for(&cf.language).is_some()
+            } else {
+                registry
+                    .detect(&w.rel, None)
+                    .is_some_and(|e| e.language_id() == cf.language)
+            };
             if same_language && cf.mtime_ns == w.mtime_ns && cf.size == w.size {
                 return Some(Parsed {
                     rel: w.rel.clone(),
@@ -237,8 +245,22 @@ impl PhaseTimer {
     }
 }
 
+/// The first line of a file, read from its first few hundred bytes only — enough for a `#!`
+/// line, and cheap enough to do for every extensionless file (`LICENSE`, `Makefile`, `bin/*`).
+fn first_line(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = [0u8; 256];
+    let read = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let text = String::from_utf8_lossy(&head[..read]);
+    text.lines().next().map(str::to_string)
+}
+
 fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
-    let extractor = registry.detect(&w.rel, None)?;
+    let extractor = if registry.needs_first_line(&w.rel) {
+        registry.detect(&w.rel, first_line(&w.abs).as_deref())?
+    } else {
+        registry.detect(&w.rel, None)?
+    };
     let bytes = std::fs::read(&w.abs).ok()?;
     let grammar = extractor.grammar();
     let tree = compass_extract::parse(&grammar, &bytes)?;

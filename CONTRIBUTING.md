@@ -65,8 +65,9 @@ PR checklist:
 
 - [ ] **Crate** — created `crates/compass-lang-<name>/` (start by copying
       `crates/compass-lang-template/`).
-- [ ] **Detection** — declared `Detection { extensions, shebangs }`; the walker picks it up
-      from the registry (don't edit the walker).
+- [ ] **Detection** — declared `Detection { extensions, shebangs }` (or exact `filenames()` for
+      a file type identified by name, like `Dockerfile`); the engine picks it up from the
+      registry (don't edit the engine).
 - [ ] **Parsing (`extract`)** — the tree-sitter grammar is wired in and symbols (functions,
       classes, etc.) are extracted per file.
 - [ ] **Import resolution (`resolve`)** — the language's import/include mechanism resolves to

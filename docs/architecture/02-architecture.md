@@ -332,9 +332,11 @@ optional workspace dependency and `lang-<name>` feature in `compass-cli` + one l
   compiled-in set — it cannot add a language at runtime (no `.so` loading). Per-language
   project config (tsconfig paths, source roots, `.csproj` refs) is **opaque** to core and
   flows to the language crate via `LangConfig` in the `resolve` phase.
-- **Detection is registry-driven** for **both** extensions **and** shebang interpreter
-  patterns: each `Extractor` declares `Detection { extensions, shebangs }`; `engine::walk`
-  consumes the union and holds no per-language table.
+- **Detection is registry-driven**: each `Extractor` declares `Detection { extensions,
+  shebangs }` and, optionally, exact `filenames()`; the engine holds no per-language table.
+  Order: a **file-name** claim (across all extractors — so `package.json` can be owned without
+  anyone claiming `.json`, ADR-0007 §3), then the extension, then — only for files with no
+  extension and no claim — the `#!` line, read from the file's first bytes.
 - **MCP tool surface:** file-level — `overview`, `graph_stats`, `file_dependencies` (deps +
   dependents), `subgraph` (the relevant slice around a file, so the AI fetches a small cheap
   context instead of grepping — FR-11/C3), `shortest_path` (FR-17/E1), `impact` (transitive

@@ -193,3 +193,35 @@ fn a_graph_cached_before_categories_existed_loads_as_code() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_extensionless_script_is_mapped_by_its_shebang_and_reused_from_cache() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-shebang");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(
+        dir.join("bin").join("cli"),
+        "#!/usr/bin/env node\nfunction main() {}\nmain();\n",
+    )
+    .unwrap();
+    // Extensionless, but no `#!` line: not a script anyone can identify.
+    std::fs::write(dir.join("LICENSE"), "MIT\n").unwrap();
+
+    let mut registry = Registry::new();
+    registry.register(Box::new(compass_lang_typescript::TypeScriptExtractor));
+
+    let (g1, cache) = compass_engine::index_incremental(&dir, &registry, None).unwrap();
+    let paths: Vec<String> = g1
+        .files()
+        .iter()
+        .map(|f| f.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert_eq!(paths, ["bin/cli"]);
+    assert_eq!(symbol_names(&g1), ["main"]);
+
+    // Unchanged on the next run: served from the cache (it has no extension to re-detect by).
+    let (g2, _) = compass_engine::index_incremental(&dir, &registry, Some(&cache)).unwrap();
+    assert_eq!(symbol_names(&g2), ["main"]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
