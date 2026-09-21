@@ -83,6 +83,9 @@
         selector: 'edge[confidence = "Heuristic"]',
         style: { "line-style": "dotted", "opacity": 0.28 },
       },
+      // A file category the viewer switched off (and its symbols). `display: none` also drops
+      // the edges that touch it.
+      { selector: ".cat-hidden", style: { "display": "none" } },
       { selector: ".show-label", style: { "text-opacity": 1 } },
       { selector: ".dim", style: { opacity: 0.07 } },
       {
@@ -111,13 +114,52 @@
     return "l" + (d.language || "");
   }
 
+  // ---- file categories (code, markup, data, …) ---------------------------------------------
+  // Which categories exist comes from the data, and whether one is "supporting" (non-code)
+  // comes from core — nothing here knows a category by name. Supporting categories start
+  // hidden; whatever the viewer switches is remembered for next time.
+  var CATEGORY_PREFS_KEY = "compass.categoryVisible";
+  var categoryPrefs = (function () {
+    try { return JSON.parse(localStorage.getItem(CATEGORY_PREFS_KEY)) || {}; } catch (e) { return {}; }
+  })();
+  var categories = [];                              // [{ name, count, supporting, visible }]
+
+  function categoryVisible(name, supporting) {
+    return Object.prototype.hasOwnProperty.call(categoryPrefs, name) ? !!categoryPrefs[name] : !supporting;
+  }
+  function setCategoryVisible(name, visible) {
+    categoryPrefs[name] = visible;
+    try { localStorage.setItem(CATEGORY_PREFS_KEY, JSON.stringify(categoryPrefs)); } catch (e) { /* private mode */ }
+  }
+  function visibleFiles() { return cy.nodes('[kind = "file"]').not(".cat-hidden"); }
+
+  function applyCategories() {
+    var byName = {};
+    cy.nodes('[kind = "file"]').forEach(function (n) {
+      var name = n.data("category") || "code";
+      var c = byName[name] || (byName[name] = { name: name, count: 0, supporting: !!n.data("supporting") });
+      c.count++;
+    });
+    categories = Object.keys(byName).sort().map(function (k) {
+      byName[k].visible = categoryVisible(k, byName[k].supporting);
+      return byName[k];
+    });
+    var hidden = {};
+    categories.forEach(function (c) { if (!c.visible) hidden[c.name] = true; });
+    cy.batch(function () {
+      cy.nodes().forEach(function (n) {           // symbols carry their file's category
+        n.toggleClass("cat-hidden", !!hidden[n.data("category") || "code"]);
+      });
+    });
+  }
+
   function applyColors() {
     var keys = Array.from(new Set(cy.nodes().map(colorKey))).sort();
     var index = new Map(keys.map(function (k, i) { return [k, i]; }));
 
     // Per-key count + a representative label (the most-connected file's folder/name).
     var meta = {};
-    cy.nodes('[kind = "file"]').forEach(function (n) {
+    visibleFiles().forEach(function (n) {
       var k = colorKey(n);
       var m = meta[k] || (meta[k] = { count: 0, topDeg: -1, label: "" });
       m.count++;
@@ -204,7 +246,7 @@
 
   function placeSymbols(byFile) {
     cy.batch(function () {
-      cy.nodes('[kind = "file"]').forEach(function (file) {
+      visibleFiles().forEach(function (file) {
         var center = file.position(), inner = file.data("size") / 2;
         (byFile[file.id()] || []).forEach(function (symbol, i) {
           var r = inner + SYMBOL_SPACING * Math.sqrt(i + 1), a = i * GOLDEN_ANGLE;
@@ -216,9 +258,9 @@
 
   function runLayout(fresh) {
     if (layout) layout.stop();
-    var files = cy.nodes('[kind = "file"]');
+    var files = visibleFiles();
     var byFile = symbolsByFile();
-    var withSymbols = cy.nodes('[kind = "symbol"]').nonempty();
+    var withSymbols = cy.nodes('[kind = "symbol"]').not(".cat-hidden").nonempty();
 
     // Let the simulation see each file at the size of its whole cloud, so it leaves room. The
     // layout reads a node's rendered size, so the real size is swapped back in `layoutstop` —
@@ -231,7 +273,7 @@
     });
     var width = Math.max(cy.width(), Math.sqrt(area * 2.5 * 16 / 9));
 
-    layout = cy.elements('node[kind = "file"], edge[kind = "import"]').layout({
+    layout = files.union(files.edgesWith(files).filter('[kind = "import"]')).layout({
       name: "cose",
       // Symbols are positioned once the files have settled; animating the files would leave
       // the clouds trailing behind them, so with symbols shown the layout is applied at once.
@@ -260,7 +302,8 @@
   // a thousand symbols — which leaves the graph small in a corner, so measure the nodes alone
   // and keep clear of the toolbar (top) and the legend (right).
   function fitAll() {
-    var box = cy.nodes().boundingBox({ includeLabels: false, includeOverlays: false });
+    var box = cy.nodes().not(".cat-hidden")
+      .boundingBox({ includeLabels: false, includeOverlays: false });
     if (!box.w || !box.h) return;
     var pad = { top: 90, right: 250, bottom: 60, left: 40 };
     var w = Math.max(cy.width() - pad.left - pad.right, 100);
@@ -360,7 +403,7 @@
     // groups can share a color and must not merge into one hull). Only real clusters get a
     // puddle; singletons/pairs (e.g. disconnected leaf files) are left bare.
     var groups = {};
-    cy.nodes('[kind = "file"]').forEach(function (n) {
+    visibleFiles().forEach(function (n) {
       if (colorMode === "group" && n.data("isHub")) return;
       var k = colorKey(n);
       var g = groups[k] || (groups[k] = { color: n.data("color"), pts: [] });
@@ -401,7 +444,7 @@
   // ---- legend ---------------------------------------------------------------------------
   var legendEl = $("legend");
   function renderLegend() {
-    if (!legendData.length) { legendEl.hidden = true; return; }
+    if (!legendData.length && categories.length < 2) { legendEl.hidden = true; return; }
     var MAX = 8;
     var title = colorMode === "folder" ? "Folders" : colorMode === "language" ? "Languages" : "Sub-parts";
     var html = '<div class="legend-title">' + title + " · " + legendData.length + "</div>";
@@ -416,9 +459,33 @@
       html += '<div class="legend-note"><span class="edge-sample" aria-hidden="true"></span>' +
         "dotted &amp; faint = heuristic (guessed) edge</div>";
     }
+    // Only worth a control when there is something to choose between.
+    if (categories.length > 1) {
+      // A labelled group, not a <fieldset>: a <legend> is drawn *on* the border line.
+      html += '<div class="legend-filters" role="group" aria-labelledby="legend-show">' +
+        '<div class="legend-title" id="legend-show">Show</div>';
+      categories.forEach(function (c) {
+        html += '<label class="legend-row filter"><input type="checkbox" data-category="' + esc(c.name) + '"' +
+          (c.visible ? " checked" : "") + '><span class="name">' + esc(c.name) +
+          '</span><span class="count">' + c.count + "</span></label>";
+      });
+      html += "</div>";
+    }
     legendEl.innerHTML = html;
     legendEl.hidden = false;
   }
+  legendEl.addEventListener("change", function (e) {
+    var name = e.target.getAttribute && e.target.getAttribute("data-category");
+    if (name === null || name === undefined) return;
+    setCategoryVisible(name, e.target.checked);
+    applyCategories();
+    applyColors();                                  // re-renders the legend, keeping focus below
+    runLayout(false);
+    updateCounts();
+    applySearch();
+    var again = legendEl.querySelector('input[data-category="' + name.replace(/"/g, '\\"') + '"]');
+    if (again) again.focus();
+  });
 
   // ---- elements / data ------------------------------------------------------------------
   function reconcile(elements) {
@@ -442,6 +509,7 @@
     var before = cy.elements().length;
     if (fresh) { cy.elements().remove(); cy.add(elements); }
     else { reconcile(elements); }
+    applyCategories();
     decorate();
     runLayout(fresh || before === 0);
     updateCounts();
@@ -449,13 +517,15 @@
   }
 
   function updateCounts() {
-    var files = cy.nodes('[kind = "file"]').length;
-    var syms = cy.nodes('[kind = "symbol"]').length;
+    var allFiles = cy.nodes('[kind = "file"]').length;
+    var files = visibleFiles().length;
+    var syms = cy.nodes('[kind = "symbol"]').not(".cat-hidden").length;
     var parts = [files + " files"];
     if (syms) parts.push(syms + " symbols");
-    parts.push(cy.edges().length + " edges");
+    parts.push(cy.edges(":visible").length + " edges");
+    if (allFiles > files) parts.push((allFiles - files) + " hidden");
     $("counts").textContent = parts.join("  ·  ");
-    $("empty").hidden = files + syms > 0;
+    $("empty").hidden = allFiles + syms > 0;
   }
 
   function loadGraph(fresh) {

@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use compass_core::{EdgeConfidence, EdgeKind, GraphView, NodeKind, SymbolKind};
+use compass_core::{EdgeConfidence, EdgeKind, FileCategory, GraphView, NodeKind, SymbolKind};
 use serde::Serialize;
 
 // Front-end assets, embedded so the binary is self-contained and works with no network
@@ -52,6 +52,9 @@ struct NodeData {
     /// The file's category (`code`, `markup`, `data`, …) — the map builds its hide/show
     /// toggles from the categories present, so none is hard-coded in the front-end.
     category: String,
+    /// Whether the category is a supporting (non-code) one — hidden by default in the map. The
+    /// front-end gets the bit from core rather than keeping its own list of category names.
+    supporting: bool,
     /// Why the file's contents were skipped (too large, minified), for the tooltip.
     #[serde(rename = "notAnalysed", skip_serializing_if = "Option::is_none")]
     not_analysed: Option<String>,
@@ -142,6 +145,7 @@ fn elements_of(view: &GraphView) -> Elements {
                 path: n.path.clone(),
                 language: n.language.clone(),
                 category: n.category.clone(),
+                supporting: !FileCategory::new(n.category.as_str()).is_code_like(),
                 not_analysed: n.not_analysed.clone(),
                 symbol_kind: n.symbol_kind.map(symbol_kind_str),
                 group: n.group,
