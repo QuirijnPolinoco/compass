@@ -1,0 +1,4 @@
+{
+  "name": "@acme/web",
+  "dependencies": { "@acme/shared": "workspace:*", "react": "^19.0.0" }
+}

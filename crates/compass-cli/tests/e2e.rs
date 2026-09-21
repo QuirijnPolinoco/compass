@@ -101,6 +101,10 @@ fn fixture_html() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-html")
 }
 
+fn fixture_ts_workspace() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-ts-workspace")
+}
+
 fn fixture_broken() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/e2e/fixture-broken")
 }
@@ -374,6 +378,27 @@ fn overview_of_html_fixture() {
     assert!(stdout.contains("import edges:  5"), "stdout:\n{stdout}");
     assert!(stdout.contains("diagnostics:  0"), "stdout:\n{stdout}");
     assert!(stdout.contains("html"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn deps_cross_a_workspace_package_boundary() {
+    // apps/web imports `@acme/shared` by package name; its manifest points at dist/ (not in the
+    // map), so the edge must land on the package's source entry.
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("deps")
+        .arg(fixture_ts_workspace())
+        .arg("packages/shared/src/index.ts")
+        .output()
+        .expect("run compass");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit\nstderr:\n{stderr}");
+    assert!(stdout.contains("apps/web/src/main.ts"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("packages/shared/src/dates.ts"),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]
