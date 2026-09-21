@@ -100,7 +100,7 @@ pub fn index_incremental(
     // unambiguous — the same-file symbol of that name, else a *unique* global match. Ambiguous
     // names (overloads, common method names) are skipped so we never draw a wrong edge.
     let calls_t = PhaseTimer::start("resolve-calls");
-    resolve_calls(&mut graph, &parsed, &symbol_ids);
+    resolve_calls(&mut graph, &parsed, &symbol_ids, registry);
     calls_t.stop(graph.calls().len());
 
     // Build the language-agnostic resolution indices from the assembled files.
@@ -248,15 +248,35 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
 }
 
 /// Turn raw caller/callee names into `Calls` edges. Conservative by design: a call resolves to
-/// the same-file symbol of that name first, otherwise to a *unique* global match — names that
-/// occur in more than one file (and aren't local) are left unresolved rather than guessed.
-fn resolve_calls(graph: &mut Graph, parsed: &[Parsed], symbol_ids: &[Vec<SymbolId>]) {
-    // Global name → symbol ids (across the whole repo).
-    let mut by_name: HashMap<&str, Vec<SymbolId>> = HashMap::new();
+/// the same-file symbol of that name first, otherwise to a *unique* match within the caller's
+/// [call namespace](compass_extract::Extractor::call_namespace) — names that occur in more than
+/// one file (and aren't local) are left unresolved rather than guessed.
+///
+/// The namespace scoping matters in both directions. Without it a Python `build()` could link to
+/// a lone Go `build`, and — worse, because it is silent — adding a file in *any* language that
+/// defines an already-unique name would make that name ambiguous and delete a correct edge.
+fn resolve_calls(
+    graph: &mut Graph,
+    parsed: &[Parsed],
+    symbol_ids: &[Vec<SymbolId>],
+    registry: &Registry,
+) {
+    let namespaces: HashMap<LanguageId, String> = registry
+        .extractors()
+        .iter()
+        .map(|e| (e.language_id(), e.call_namespace()))
+        .collect();
+    let namespace_of = |p: &Parsed| namespaces.get(&p.language).map(String::as_str);
+
+    // (namespace, name) → symbol ids, across the whole repo.
+    let mut by_name: HashMap<(&str, &str), Vec<SymbolId>> = HashMap::new();
     for (pi, p) in parsed.iter().enumerate() {
+        let Some(namespace) = namespace_of(p) else {
+            continue;
+        };
         for (si, s) in p.symbols.iter().enumerate() {
             by_name
-                .entry(s.name.as_str())
+                .entry((namespace, s.name.as_str()))
                 .or_default()
                 .push(symbol_ids[pi][si]);
         }
@@ -266,6 +286,7 @@ fn resolve_calls(graph: &mut Graph, parsed: &[Parsed], symbol_ids: &[Vec<SymbolI
         if p.calls.is_empty() {
             continue;
         }
+        let namespace = namespace_of(p);
         let ids = &symbol_ids[pi];
         // Same-file name → symbol id (first definition wins).
         let mut local: HashMap<&str, SymbolId> = HashMap::new();
@@ -276,17 +297,16 @@ fn resolve_calls(graph: &mut Graph, parsed: &[Parsed], symbol_ids: &[Vec<SymbolI
             let Some(&caller) = ids.get(call.caller) else {
                 continue;
             };
-            // A same-file hit is deterministic (Resolved); a unique-global hit is a
-            // name-based guess (Heuristic) — correct in practice but not provable here.
+            // A same-file hit is deterministic (Resolved); a unique hit elsewhere in the
+            // namespace is a name-based guess (Heuristic) — correct in practice but not
+            // provable here.
             let target = local
                 .get(call.callee.as_str())
                 .copied()
                 .map(|id| (id, EdgeConfidence::Resolved))
-                .or_else(|| match by_name.get(call.callee.as_str()) {
-                    Some(matches) if matches.len() == 1 => {
-                        Some((matches[0], EdgeConfidence::Heuristic))
-                    }
-                    _ => None,
+                .or_else(|| {
+                    let matches = by_name.get(&(namespace?, call.callee.as_str()))?;
+                    (matches.len() == 1).then(|| (matches[0], EdgeConfidence::Heuristic))
                 });
             if let Some((callee, confidence)) = target {
                 if callee != caller {

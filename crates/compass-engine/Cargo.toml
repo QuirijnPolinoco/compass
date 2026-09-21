@@ -23,4 +23,6 @@ notify-debouncer-mini = "0.7.0"
 # into the shipped artifact.
 compass-lang-rust = { path = "../compass-lang-rust" }
 compass-lang-typescript = { path = "../compass-lang-typescript" }
+compass-lang-c = { path = "../compass-lang-c" }
+compass-lang-cpp = { path = "../compass-lang-cpp" }
 compass-core.workspace = true

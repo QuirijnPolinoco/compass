@@ -28,6 +28,12 @@ impl Extractor for CppExtractor {
         LanguageId::new("cpp")
     }
 
+    /// C and C++ call each other freely (C++ includes C headers; `extern "C"`), so they share
+    /// one call namespace.
+    fn call_namespace(&self) -> String {
+        "c-family".to_string()
+    }
+
     fn detection(&self) -> Detection {
         // C++-only extensions: `.c`/`.h` stay with the C extractor to avoid ambiguity.
         Detection {

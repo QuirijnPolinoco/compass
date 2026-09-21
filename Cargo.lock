@@ -159,6 +159,8 @@ dependencies = [
  "anyhow",
  "compass-core",
  "compass-extract",
+ "compass-lang-c",
+ "compass-lang-cpp",
  "compass-lang-rust",
  "compass-lang-typescript",
  "ignore",
