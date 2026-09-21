@@ -127,6 +127,18 @@ pub trait ResolutionContext {
     fn all_files(&self) -> Vec<&Path>;
 }
 
+/// How an extractor gets at a file's contents.
+pub enum Parsing {
+    /// Parse the whole file with a tree-sitter grammar, then [`Extractor::extract`]. What every
+    /// programming language does.
+    Grammar(Language),
+    /// Read at most `max_bytes` from the top of the file and hand them to
+    /// [`Extractor::extract_head`] — for file types whose *schema* is at the top and whose body
+    /// may be gigabytes (a CSV header). Such a file is never parsed, so the engine's size cap
+    /// does not apply to it: a 2 GB export costs the same as a 2 KB one.
+    Head { max_bytes: usize },
+}
+
 /// The one stable interface a language implements. The two phases keep per-language
 /// resolution logic out of the engine (ADR-0002).
 pub trait Extractor: Send + Sync {
@@ -154,10 +166,33 @@ pub trait Extractor: Send + Sync {
     fn call_namespace(&self) -> String {
         self.language_id().as_str().to_string()
     }
-    /// The tree-sitter grammar for this language.
-    fn grammar(&self) -> Language;
-    /// Phase 1 (per file): pull symbols + raw import specifiers from a parsed tree.
-    fn extract(&self, source: &[u8], tree: &Tree) -> Extraction;
+    /// The tree-sitter grammar for this language. Every programming language implements this;
+    /// only an extractor that overrides [`parsing`](Self::parsing) may leave it out.
+    fn grammar(&self) -> Language {
+        unimplemented!(
+            "{}: implement `grammar()`, or override `parsing()` to read files another way",
+            self.language_id()
+        )
+    }
+    /// How this extractor reads a file. Defaults to parsing it with [`grammar`](Self::grammar);
+    /// the engine only ever asks this, never `grammar()` directly.
+    fn parsing(&self) -> Parsing {
+        Parsing::Grammar(self.grammar())
+    }
+    /// Phase 1 (per file): pull symbols + raw import specifiers from a parsed tree. Like
+    /// [`grammar`](Self::grammar), required of every extractor that parses — which is why the
+    /// default fails loudly instead of quietly mapping nothing.
+    fn extract(&self, _source: &[u8], _tree: &Tree) -> Extraction {
+        unimplemented!(
+            "{}: implement `extract()`, or override `parsing()` and `extract_head()`",
+            self.language_id()
+        )
+    }
+    /// Phase 1 for [`Parsing::Head`] extractors: pull symbols from the top of a file. `head` may
+    /// end mid-line or mid-character — it is a prefix, not the file.
+    fn extract_head(&self, _head: &[u8]) -> Extraction {
+        Extraction::default()
+    }
     /// Phase 2 (whole repo): resolve raw imports to files using `ctx`. The algorithm is
     /// language-specific; the engine only supplies the context.
     fn resolve(

@@ -281,3 +281,77 @@ fn oversized_and_minified_files_are_nodes_without_contents() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A head-only test double: every line of the first 64 bytes is a `Field` symbol. It has no
+/// grammar and no `extract` at all — `parsing()` is the only thing the engine may ask.
+struct HeadOnly;
+
+impl compass_extract::Extractor for HeadOnly {
+    fn language_id(&self) -> compass_core::LanguageId {
+        compass_core::LanguageId::new("headonly")
+    }
+    fn detection(&self) -> compass_extract::Detection {
+        compass_extract::Detection {
+            extensions: &["hdr"],
+            shebangs: &[],
+        }
+    }
+    fn category(&self) -> compass_core::FileCategory {
+        compass_core::FileCategory::new("data")
+    }
+    fn parsing(&self) -> compass_extract::Parsing {
+        compass_extract::Parsing::Head { max_bytes: 64 }
+    }
+    fn extract_head(&self, head: &[u8]) -> compass_extract::Extraction {
+        let first_line = String::from_utf8_lossy(head)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        compass_extract::Extraction {
+            symbols: first_line
+                .split(',')
+                .map(|name| ExtractedSymbol {
+                    name: name.to_string(),
+                    kind: SymbolKind::Field,
+                    span: Span {
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_row: 0,
+                        start_col: 0,
+                    },
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+    fn resolve(
+        &self,
+        _: &[compass_extract::RawImport],
+        _: &dyn compass_extract::ResolutionContext,
+        _: &compass_extract::LangConfig,
+    ) -> Vec<compass_extract::ResolvedImport> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn a_head_only_extractor_reads_the_top_of_a_file_of_any_size() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-head-only");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Well over the 1 MB cap that applies to parsed files.
+    let body = "1,2\n".repeat(400_000);
+    std::fs::write(dir.join("big.hdr"), format!("id,total\n{body}")).unwrap();
+
+    let mut registry = Registry::new();
+    registry.register(Box::new(HeadOnly));
+    let (graph, _) = compass_engine::index_incremental(&dir, &registry, None).unwrap();
+
+    assert_eq!(symbol_names(&graph), ["id", "total"]);
+    let file = &graph.files()[0];
+    assert_eq!(file.not_analysed, None, "the header WAS analysed");
+    assert_eq!(file.category, compass_core::FileCategory::new("data"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
