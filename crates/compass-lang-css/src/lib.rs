@@ -17,7 +17,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use compass_core::{LanguageId, Span, SymbolKind};
+use compass_core::{FileCategory, LanguageId, Span, SymbolKind};
 use compass_extract::{
     Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
     ResolvedImport,
@@ -30,6 +30,10 @@ pub struct CssExtractor;
 impl Extractor for CssExtractor {
     fn language_id(&self) -> LanguageId {
         LanguageId::new("css")
+    }
+
+    fn category(&self) -> FileCategory {
+        FileCategory::markup()
     }
 
     fn detection(&self) -> Detection {

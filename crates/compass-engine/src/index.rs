@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use compass_core::{
-    Diagnostic, DiagnosticKind, EdgeConfidence, FileId, Graph, LanguageId, SymbolId,
+    Diagnostic, DiagnosticKind, EdgeConfidence, FileCategory, FileId, Graph, LanguageId, SymbolId,
 };
 use compass_extract::{
     ExtractedSymbol, LangConfig, RawCall, RawImport, Registry, ResolutionContext, ResolvedImport,
@@ -85,8 +85,16 @@ pub fn index_incremental(
     let assemble_t = PhaseTimer::start("assemble");
     let mut graph = Graph::new();
     let mut symbol_ids: Vec<Vec<SymbolId>> = Vec::with_capacity(parsed.len());
+    // A file's category is a property of the extractor that mapped it (ADR-0007), so it is
+    // looked up rather than cached with the extraction.
+    let categories: HashMap<LanguageId, FileCategory> = registry
+        .extractors()
+        .iter()
+        .map(|e| (e.language_id(), e.category()))
+        .collect();
     for p in &parsed {
-        let fid = graph.add_file(p.rel.clone(), p.language.clone(), p.hash);
+        let category = categories.get(&p.language).cloned().unwrap_or_default();
+        let fid = graph.add_file_in(p.rel.clone(), p.language.clone(), category, p.hash);
         let mut ids = Vec::with_capacity(p.symbols.len());
         for s in &p.symbols {
             ids.push(graph.add_symbol(s.name.clone(), s.kind, fid, s.span));

@@ -163,3 +163,33 @@ fn caches_written_by_another_release_are_discarded() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_graph_cached_before_categories_existed_loads_as_code() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-category-default");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+
+    let (graph, _) = compass_engine::index_incremental(&dir, &registry(), None).unwrap();
+    compass_engine::cache::save(&dir, &graph).unwrap();
+
+    // Strip the field an older build never wrote; every file it mapped was source code.
+    let path = dir.join(".compass").join("graph.json");
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    json["graph"]["files"][0]
+        .as_object_mut()
+        .expect("file object")
+        .remove("category")
+        .expect("category is serialized");
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let restored = compass_engine::cache::load(&dir).expect("still loads");
+    assert_eq!(
+        restored.files()[0].category,
+        compass_core::FileCategory::code()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

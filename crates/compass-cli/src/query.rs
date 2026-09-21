@@ -32,6 +32,16 @@ pub(crate) fn run_overview(path: &Path) -> ExitCode {
             );
         }
     }
+    if !overview.supporting.is_empty() {
+        println!("  supporting files:");
+        for stat in &overview.supporting {
+            println!(
+                "    {:<12} {} file(s)",
+                stat.language.as_str(),
+                stat.file_count
+            );
+        }
+    }
     if !overview.most_connected.is_empty() {
         println!("  most connected:");
         for c in &overview.most_connected {
@@ -85,12 +95,36 @@ pub(crate) fn run_broken(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub(crate) fn run_languages() -> ExitCode {
+/// What this build maps, from the one registry everything else uses: the languages (code-like
+/// extractors) and the supporting file types, each in registration order.
+fn supported() -> (Vec<String>, Vec<String>) {
     let registry = registry::register_all();
-    let ids = registry.language_ids();
-    println!("Supported languages ({}):", ids.len());
-    for id in ids {
+    let (code, supporting): (Vec<_>, Vec<_>) = registry
+        .extractors()
+        .iter()
+        .partition(|e| e.category().is_code_like());
+    let ids = |extractors: Vec<&Box<dyn compass_extract::Extractor>>| {
+        extractors
+            .iter()
+            .map(|e| e.language_id().to_string())
+            .collect()
+    };
+    (ids(code), ids(supporting))
+}
+
+pub(crate) fn run_languages() -> ExitCode {
+    let (languages, file_types) = supported();
+    println!("Supported languages ({}):", languages.len());
+    for id in &languages {
         println!("  - {id}");
+    }
+    // Supporting (non-code) file types are listed apart: they are mapped, but they are not
+    // languages and never take part in dependency metrics (ADR-0007).
+    if !file_types.is_empty() {
+        println!("Supporting file types ({}):", file_types.len());
+        for id in &file_types {
+            println!("  - {id}");
+        }
     }
     ExitCode::SUCCESS
 }
@@ -100,12 +134,8 @@ pub(crate) fn run_serve(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let query: std::sync::Arc<dyn MapQuery + Send + Sync> = std::sync::Arc::new(graph);
-    let supported_languages = registry::register_all()
-        .language_ids()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    if let Err(e) = compass_mcp::serve_stdio(query, supported_languages) {
+    let (languages, file_types) = supported();
+    if let Err(e) = compass_mcp::serve_stdio(query, languages, file_types) {
         eprintln!("compass: MCP server error: {e:#}");
         return ExitCode::FAILURE;
     }

@@ -35,6 +35,11 @@ contain breaking changes).
 
 ### Changed
 
+- Files now carry a **category** (`code`, `markup`, and — for the supporting file types to
+  come — `data`, `contract`, `config`, …). Blast radius, the guard, cycles, hubs, isolated-file
+  smells, communities and context seeding only ever consider code-like files, so a mapped
+  README or dataset can never count as a dependent (ADR-0007). `overview` and the
+  `supported_languages` MCP tool list supporting file types apart from languages.
 - `compass context` and `compass guard` now report a file's **transitive** blast radius (every
   file a change can reach), not just its direct importers.
 - Internal: `compass-cli` is split into per-command modules.
