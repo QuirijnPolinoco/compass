@@ -16,6 +16,14 @@ contain breaking changes).
 - Call edges from the Kotlin, Ruby, PHP, C and C++ extractors — every supported language now
   contributes to the call graph.
 
+### Fixed
+
+- After upgrading Compass, files that had not changed kept the *previous* release's extraction
+  (for example no call edges for an untouched TypeScript file after 0.7 → 0.8). Caches are now
+  stamped with the release that wrote them and rebuilt on a mismatch.
+- A build compiled without a language no longer maps that language's files from a cache written
+  by a fuller build.
+
 ### Changed
 
 - `compass context` and `compass guard` now report a file's **transitive** blast radius (every

@@ -174,7 +174,9 @@ pub fn index_incremental(
 }
 
 /// Reuse `w`'s cached phase-1 extraction when `prev` has a fingerprint-matching entry (so the
-/// file is never read), otherwise read + parse it. A `(0, _)` mtime means metadata was
+/// file is never read), otherwise read + parse it. The entry must also belong to the language
+/// this registry detects for the file: a build without that language (or one that now assigns
+/// the extension elsewhere) must not resurrect an extraction it could not have produced. A `(0, _)` mtime means metadata was
 /// unavailable at walk time → never a cache hit, so we re-read rather than trust a stale entry.
 fn reuse_or_parse(
     w: &Walked,
@@ -183,7 +185,10 @@ fn reuse_or_parse(
 ) -> Option<Parsed> {
     if w.mtime_ns != 0 {
         if let Some(cf) = prev.and_then(|p| p.get(w.rel.to_string_lossy().as_ref())) {
-            if cf.mtime_ns == w.mtime_ns && cf.size == w.size {
+            let same_language = registry
+                .detect(&w.rel, None)
+                .is_some_and(|e| e.language_id() == cf.language);
+            if same_language && cf.mtime_ns == w.mtime_ns && cf.size == w.size {
                 return Some(Parsed {
                     rel: w.rel.clone(),
                     language: cf.language.clone(),
