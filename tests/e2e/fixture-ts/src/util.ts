@@ -1,3 +1,3 @@
 export function helper(): string {
-    return "hello from mapai";
+    return "hello from compass";
 }

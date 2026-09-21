@@ -1,6 +1,6 @@
 <?php
 function greet(): string {
-    return "hello from mapai";
+    return "hello from compass";
 }
 
 class Helper {}
