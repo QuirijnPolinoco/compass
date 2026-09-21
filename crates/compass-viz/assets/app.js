@@ -67,7 +67,9 @@
         },
       },
       { selector: 'edge[kind = "calls"]', style: { "line-style": "dashed" } },
-      { selector: 'edge[kind = "defines"]', style: { "line-color": "#242a37", "opacity": 0.3 } },
+      // A symbol sits in the cloud around its file, so the file→symbol "defines" edge says
+      // nothing position doesn't already say — and there is one per symbol. Not drawn.
+      { selector: 'edge[kind = "defines"]', style: { "display": "none" } },
       // Heuristic edges (guessed: namespace→dir, unique-global call) read as dashed + faint,
       // so a human can tell a guess from a path-exact certainty. `dotted` distinguishes a
       // heuristic import from a (dashed) call edge.
@@ -170,23 +172,123 @@
     applyColors();
   }
 
+  // ---- layout ---------------------------------------------------------------------------
+  // Only FILES go through the force simulation. It is O(nodes²) per iteration and runs on the
+  // main thread: 73 files settle in ~0.1 s, but the same repo's 1,700 file+symbol nodes took
+  // ~40 s, freezing the tab. Symbols don't need simulating — each belongs to exactly one file —
+  // so they are placed in a sunflower spiral around it, which is instant and keeps a file's
+  // symbols visibly together.
+  var SYMBOL_SPACING = 8;                           // spiral constant; ~1.8x this between symbols
+  var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+
+  function symbolsByFile() {
+    var byFile = {};
+    cy.nodes('[kind = "symbol"]').forEach(function (s) {
+      var path = s.data("path");
+      (byFile[path] || (byFile[path] = [])).push(s);
+    });
+    return byFile;
+  }
+
+  // Radius a file needs so its symbol cloud doesn't run into its neighbours'.
+  function cloudRadius(file, symbolCount) {
+    var r = file.data("size") / 2;
+    return symbolCount ? r + SYMBOL_SPACING * (Math.sqrt(symbolCount) + 1) : r;
+  }
+
+  function placeSymbols(byFile) {
+    cy.batch(function () {
+      cy.nodes('[kind = "file"]').forEach(function (file) {
+        var center = file.position(), inner = file.data("size") / 2;
+        (byFile[file.id()] || []).forEach(function (symbol, i) {
+          var r = inner + SYMBOL_SPACING * Math.sqrt(i + 1), a = i * GOLDEN_ANGLE;
+          symbol.position({ x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) });
+        });
+      });
+    });
+  }
+
   function runLayout(fresh) {
     if (layout) layout.stop();
-    layout = cy.layout({
+    var files = cy.nodes('[kind = "file"]');
+    var byFile = symbolsByFile();
+    var withSymbols = cy.nodes('[kind = "symbol"]').nonempty();
+
+    // Let the simulation see each file at the size of its whole cloud, so it leaves room. The
+    // layout reads a node's rendered size, so the real size is swapped back in `layoutstop` —
+    // within the same synchronous run (no animation with symbols), so it is never painted.
+    var area = 0;
+    files.forEach(function (f) {
+      var d = cloudRadius(f, (byFile[f.id()] || []).length) * 2;
+      area += d * d;
+      if (withSymbols) { f.scratch("_size", f.data("size")); f.data("size", d); }
+    });
+    var width = Math.max(cy.width(), Math.sqrt(area * 2.5 * 16 / 9));
+
+    layout = cy.elements('node[kind = "file"], edge[kind = "import"]').layout({
       name: "cose",
-      animate: fresh ? false : !reduceMotion,
+      // Symbols are positioned once the files have settled; animating the files would leave
+      // the clouds trailing behind them, so with symbols shown the layout is applied at once.
+      animate: fresh || withSymbols ? false : !reduceMotion,
       randomize: fresh,
-      fit: fresh,
-      padding: 70,
+      fit: false,
+      boundingBox: { x1: 0, y1: 0, w: width, h: width * 9 / 16 },
       nodeRepulsion: 9000,
+      nodeOverlap: 20,
       idealEdgeLength: 70,
       edgeElasticity: 80,
       gravity: 0.3,
       numIter: 1200,
       componentSpacing: 90,
     });
+    layout.one("layoutstop", function () {
+      if (withSymbols) files.forEach(function (f) { f.data("size", f.scratch("_size")); });
+      placeSymbols(byFile);
+      clouds = byFile;
+      if (fresh || withSymbols) fitAll();
+    });
     layout.run();
   }
+
+  // Frame every node. `cy.fit` measures labels too — including the hidden ones under each of
+  // a thousand symbols — which leaves the graph small in a corner, so measure the nodes alone
+  // and keep clear of the toolbar (top) and the legend (right).
+  function fitAll() {
+    var box = cy.nodes().boundingBox({ includeLabels: false, includeOverlays: false });
+    if (!box.w || !box.h) return;
+    var pad = { top: 90, right: 250, bottom: 60, left: 40 };
+    var w = Math.max(cy.width() - pad.left - pad.right, 100);
+    var h = Math.max(cy.height() - pad.top - pad.bottom, 100);
+    var zoom = Math.min(w / box.w, h / box.h, cy.maxZoom());
+    cy.viewport({
+      zoom: zoom,
+      pan: {
+        x: pad.left + (w - box.w * zoom) / 2 - box.x1 * zoom,
+        y: pad.top + (h - box.h * zoom) / 2 - box.y1 * zoom,
+      },
+    });
+  }
+
+  // Dragging a file carries its symbol cloud along.
+  var clouds = {};                                  // file id -> its symbol nodes, as last laid out
+  var dragFrom = null;
+  cy.on("grab", 'node[kind = "file"]', function (evt) {
+    var p = evt.target.position();
+    dragFrom = { x: p.x, y: p.y };
+  });
+  cy.on("drag", 'node[kind = "file"]', function (evt) {
+    var cloud = clouds[evt.target.id()];
+    if (!dragFrom || !cloud) return;
+    var p = evt.target.position(), dx = p.x - dragFrom.x, dy = p.y - dragFrom.y;
+    dragFrom = { x: p.x, y: p.y };
+    cy.batch(function () {
+      cloud.forEach(function (symbol) {
+        var q = symbol.position();
+        symbol.position({ x: q.x + dx, y: q.y + dy });
+      });
+    });
+  });
+  cy.on("free", 'node[kind = "file"]', function () { dragFrom = null; });
 
   // ---- cluster hulls (translucent "puddles" behind same-colored file nodes) -------------
   var hullCanvas = $("hulls");
@@ -394,7 +496,13 @@
 
   // ---- controls -------------------------------------------------------------------------
   $("color-mode").addEventListener("change", function (e) { colorMode = e.target.value; applyColors(); });
-  $("symbols").addEventListener("change", function (e) { includeSymbols = e.target.checked; loadGraph(true); });
+  // Not a fresh layout: the files keep their places and only make room for (or close up after)
+  // the symbol clouds, so the map stays recognisable.
+  $("symbols").addEventListener("change", function (e) {
+    includeSymbols = e.target.checked;
+    $("loading").hidden = false;
+    loadGraph(false).then(function () { $("loading").hidden = true; });
+  });
   $("fit").addEventListener("click", function () {
     cy.animate({ fit: { eles: cy.elements(), padding: 50 }, duration: reduceMotion ? 0 : 300 });
   });

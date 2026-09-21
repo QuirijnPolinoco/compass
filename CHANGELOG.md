@@ -16,6 +16,11 @@ contain breaking changes).
 - Call edges from the Kotlin, Ruby, PHP, C and C++ extractors — every supported language now
   contributes to the call graph.
 
+### Fixed
+
+- The visual map froze for tens of seconds when **Symbols** was switched on. Only files go
+  through the force layout now; each file's symbols are placed in a cloud around it, instantly.
+
 ### Changed
 
 - `compass context` and `compass guard` now report a file's **transitive** blast radius (every
