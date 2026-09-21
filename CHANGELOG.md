@@ -9,6 +9,10 @@ contain breaking changes).
 
 ### Added
 
+- TypeScript/JS: imports of **in-repo packages by name** (`@acme/shared` in an npm, pnpm, Yarn
+  or Lerna workspace) now resolve to the package's source, so dependencies and blast radius
+  cross package boundaries. `package.json` is read as resolver input; build-output entries
+  (`dist/…`) are followed to their `src/` counterpart.
 - **HTML** language extractor: `href`/`src` references to mapped stylesheets, scripts and pages
   become edges; element ids are symbols. A miss is external, never a broken import.
 - **CSS** language extractor: `@import` edges between stylesheets; `.class`, `#id`,

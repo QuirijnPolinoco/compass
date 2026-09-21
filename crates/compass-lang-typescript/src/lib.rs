@@ -11,7 +11,11 @@
 //! that don't resolve are treated as external too (a relative path may point at a non-code
 //! asset like `./styles.css`), so we avoid false "broken import" diagnostics. TS-ESM `.js`
 //! specifiers also resolve to their `.ts` source, and `require()` / dynamic `import()` are
-//! captured alongside `import`/`export … from`.
+//! captured alongside `import`/`export … from`. A bare specifier that names an **in-repo
+//! package** (`@acme/shared` in a monorepo) resolves to that package's source — see
+//! [`workspace`].
+
+mod workspace;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -73,14 +77,22 @@ impl Extractor for TypeScriptExtractor {
     ) -> Vec<ResolvedImport> {
         let current_dir = parent_dir(&normalize(ctx.current_file()));
         let tsconfig = tsconfig_for(ctx.repo_root(), &current_dir);
+        let workspace = workspace::Workspace::of(ctx);
+
+        let first_mapped = |bases: &[String]| {
+            bases
+                .iter()
+                .flat_map(|base| candidates(base))
+                .find_map(|cand| ctx.file_by_path(Path::new(&cand)))
+        };
 
         imports
             .iter()
             .map(|imp| {
                 let spec = imp.specifier.as_str();
 
-                // Candidate base paths to try, in order. Relative specs resolve against the
-                // importing file's dir; non-relative ones go through tsconfig path aliases.
+                // Relative specs resolve against the importing file's dir; non-relative ones go
+                // through tsconfig path aliases first (the project's own, explicit mapping).
                 let bases: Vec<String> = if spec.starts_with('.') {
                     vec![resolve_path(&current_dir, spec)]
                 } else if let Some(ts) = &tsconfig {
@@ -88,14 +100,22 @@ impl Extractor for TypeScriptExtractor {
                 } else {
                     Vec::new()
                 };
+                if let Some(target) = first_mapped(&bases) {
+                    return ResolvedImport::resolved(target, imp.span);
+                }
 
-                for base in &bases {
-                    for cand in candidates(base) {
-                        if let Some(target) = ctx.file_by_path(Path::new(&cand)) {
-                            return ResolvedImport::resolved(target, imp.span);
-                        }
+                // Then an in-repo package by name. Certain when the repo declares a workspace
+                // (that is how the package manager links them); otherwise a convention.
+                if !spec.starts_with('.') {
+                    if let Some(target) = first_mapped(&workspace.resolve(spec)) {
+                        return if workspace.declared {
+                            ResolvedImport::resolved(target, imp.span)
+                        } else {
+                            ResolvedImport::heuristic(target, imp.span)
+                        };
                     }
                 }
+
                 // Bare/unmatched, or a relative import with no mapped file (maybe a non-code
                 // asset) → External, never a broken-import diagnostic.
                 ResolvedImport::External {
@@ -786,6 +806,78 @@ function load() { return import("./dyn-mod"); }
         // A bare specifier with no alias match is still External.
         let ext = TypeScriptExtractor.resolve(&[raw("react")], &ctx, &LangConfig);
         assert!(matches!(ext[0], ResolvedImport::External { .. }));
+    }
+
+    #[test]
+    fn resolves_workspace_packages_by_name() {
+        use compass_core::EdgeConfidence;
+
+        // A declared workspace: `@acme/shared` builds to dist/ (absent from the map) but its
+        // source is src/index.ts; `@acme/ui` exposes a subpath through an `exports` pattern.
+        let ctx = MockResolutionContext::new()
+            .disk("package.json", r#"{ "private": true, "workspaces": ["packages/*"] }"#)
+            .disk(
+                "packages/shared/package.json",
+                r#"{ "name": "@acme/shared", "main": "./dist/index.js", "types": "./dist/index.d.ts" }"#,
+            )
+            .disk(
+                "packages/ui/package.json",
+                r#"{ "name": "@acme/ui", "exports": { "./components/*": "./dist/components/*.js" } }"#,
+            )
+            .file("packages/shared/src/index.ts")
+            .file("packages/shared/src/dates.ts")
+            .file("packages/ui/src/components/Button.tsx")
+            .current("apps/web/src/main.ts", "");
+
+        let imports = [
+            raw("@acme/shared"),               // entry: dist/index.js -> src/index.ts
+            raw("@acme/shared/dates"),         // subpath with no `exports` -> src/dates.ts
+            raw("@acme/ui/components/Button"), // `exports` pattern, dist -> src
+            raw("@acme/unknown"),              // not an in-repo package
+            raw("react"),
+        ];
+        let resolved = TypeScriptExtractor.resolve(&imports, &ctx, &LangConfig);
+
+        for (r, want) in resolved.iter().zip([
+            "packages/shared/src/index.ts",
+            "packages/shared/src/dates.ts",
+            "packages/ui/src/components/Button.tsx",
+        ]) {
+            match r {
+                ResolvedImport::Resolved {
+                    target, confidence, ..
+                } => {
+                    assert_eq!(*target, ctx.id_of(want));
+                    assert_eq!(*confidence, EdgeConfidence::Resolved, "{want}");
+                }
+                other => panic!("expected Resolved({want}), got {other:?}"),
+            }
+        }
+        assert!(matches!(resolved[3], ResolvedImport::External { .. }));
+        assert!(matches!(resolved[4], ResolvedImport::External { .. }));
+    }
+
+    #[test]
+    fn a_package_name_match_without_a_declared_workspace_is_heuristic() {
+        use compass_core::EdgeConfidence;
+
+        // No `workspaces` / pnpm-workspace.yaml / lerna.json: an in-repo package that happens
+        // to share the imported name is a convention, not something the tooling guarantees.
+        let ctx = MockResolutionContext::new()
+            .disk("libs/shared/package.json", r#"{ "name": "shared" }"#)
+            .file("libs/shared/index.ts")
+            .current("app/main.ts", "");
+
+        let resolved = TypeScriptExtractor.resolve(&[raw("shared")], &ctx, &LangConfig);
+        match &resolved[0] {
+            ResolvedImport::Resolved {
+                target, confidence, ..
+            } => {
+                assert_eq!(*target, ctx.id_of("libs/shared/index.ts"));
+                assert_eq!(*confidence, EdgeConfidence::Heuristic);
+            }
+            other => panic!("expected a heuristic Resolved, got {other:?}"),
+        }
     }
 
     #[test]
