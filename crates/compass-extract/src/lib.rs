@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use compass_core::{EdgeConfidence, FileId, LanguageId, Span, SymbolKind};
+use compass_core::{EdgeConfidence, FileCategory, FileId, LanguageId, Span, SymbolKind};
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Parser, Tree};
 
@@ -132,6 +132,12 @@ pub trait ResolutionContext {
 pub trait Extractor: Send + Sync {
     fn language_id(&self) -> LanguageId;
     fn detection(&self) -> Detection;
+    /// What kind of file this extractor maps (ADR-0007). Defaults to source code. Anything that
+    /// is not [code-like](FileCategory::is_code_like) is a *supporting* file: it is in the map
+    /// and searchable, but never counts as a dependent, a hub or a cycle member.
+    fn category(&self) -> FileCategory {
+        FileCategory::code()
+    }
     /// The namespace this language's calls resolve in. A call only ever links to a symbol
     /// from the same namespace, so a Python `build()` can't be matched to a Go `build` — and,
     /// just as important, a name that is unique *within* a language stays resolvable no matter

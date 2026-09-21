@@ -49,6 +49,9 @@ struct NodeData {
     folder: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
+    /// The file's category (`code`, `markup`, `data`, …) — the map builds its hide/show
+    /// toggles from the categories present, so none is hard-coded in the front-end.
+    category: String,
     #[serde(rename = "symbolKind", skip_serializing_if = "Option::is_none")]
     symbol_kind: Option<&'static str>,
     /// Structural community id (ADR-0005) — the default coloring.
@@ -135,6 +138,7 @@ fn elements_of(view: &GraphView) -> Elements {
                 folder: top_folder(&n.path),
                 path: n.path.clone(),
                 language: n.language.clone(),
+                category: n.category.clone(),
                 symbol_kind: n.symbol_kind.map(symbol_kind_str),
                 group: n.group,
                 is_hub: n.is_hub,
@@ -211,6 +215,7 @@ mod tests {
             kind: NodeKind::File,
             path: path.to_string(),
             language: Some("rust".to_string()),
+            category: "code".to_string(),
             symbol_kind: None,
             group,
             is_hub: false,

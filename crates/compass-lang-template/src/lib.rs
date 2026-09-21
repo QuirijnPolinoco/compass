@@ -21,6 +21,14 @@ impl Extractor for TemplateExtractor {
         LanguageId::new("template")
     }
 
+    // Two more trait methods have defaults that suit a programming language, so a language
+    // crate normally leaves them out:
+    //   - `category()`       -> `FileCategory::code()`. Override only for a non-code file type
+    //                           (data, contracts, config — ADR-0007), which keeps it out of
+    //                           every dependency metric.
+    //   - `call_namespace()` -> the language id. Override only to share call resolution with a
+    //                           language yours really calls into (C/C++, Java/Kotlin).
+
     fn detection(&self) -> Detection {
         Detection {
             // TODO: file extensions (without the dot) and any shebang interpreter hints.

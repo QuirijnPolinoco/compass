@@ -71,13 +71,20 @@ pub struct MapServer {
     /// Every language this binary can map — a property of the build, not of the mapped repo,
     /// so the composition root passes it in (the server never sees the extractor registry).
     supported_languages: Vec<String>,
+    /// The supporting (non-code) file types this binary can map — data, contracts, config.
+    supported_file_types: Vec<String>,
 }
 
 impl MapServer {
-    pub fn new(query: Query, supported_languages: Vec<String>) -> Self {
+    pub fn new(
+        query: Query,
+        supported_languages: Vec<String>,
+        supported_file_types: Vec<String>,
+    ) -> Self {
         Self {
             query,
             supported_languages,
+            supported_file_types,
         }
     }
 }
@@ -254,21 +261,20 @@ impl MapServer {
     }
 
     #[tool(
-        description = "The languages this Compass build can map, and which of them appear in this \
-                       repository. Files in any other language are not in the map — fall back to \
-                       normal search for those."
+        description = "The languages and supporting file types (data, contracts, config) this \
+                       Compass build can map, and which of them appear in this repository. Files \
+                       of any other kind are not in the map — fall back to normal search for those."
     )]
     async fn supported_languages(&self) -> String {
-        let in_repo: Vec<String> = self
-            .query
-            .overview()
-            .languages
-            .into_iter()
-            .map(|l| l.language.to_string())
-            .collect();
+        let overview = self.query.overview();
+        let names = |stats: Vec<compass_core::LanguageStat>| -> Vec<String> {
+            stats.into_iter().map(|l| l.language.to_string()).collect()
+        };
         serde_json::to_string_pretty(&serde_json::json!({
             "supported": self.supported_languages,
-            "in_this_repository": in_repo,
+            "supported_file_types": self.supported_file_types,
+            "in_this_repository": names(overview.languages),
+            "file_types_in_this_repository": names(overview.supporting),
         }))
         .unwrap_or_default()
     }
@@ -279,10 +285,14 @@ impl ServerHandler for MapServer {}
 
 /// Serve the map over MCP on stdio until the client disconnects. Builds and owns its own
 /// async runtime, so callers (the CLI) stay synchronous.
-pub fn serve_stdio(query: Query, supported_languages: Vec<String>) -> anyhow::Result<()> {
+pub fn serve_stdio(
+    query: Query,
+    supported_languages: Vec<String>,
+    supported_file_types: Vec<String>,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let service = MapServer::new(query, supported_languages)
+        let service = MapServer::new(query, supported_languages, supported_file_types)
             .serve(rmcp::transport::stdio())
             .await?;
         service.waiting().await?;

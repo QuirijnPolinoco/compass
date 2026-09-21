@@ -1,11 +1,11 @@
 //! `compass guard` — the opt-in PreToolUse hook that asks before an edit to a high-centrality
 //! file. Fails open: any error lets the edit through.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use compass_core::{EdgeKind, Graph, MapQuery, NodeKind};
+use compass_core::{EdgeKind, FileCategory, Graph, MapQuery, NodeKind};
 
 use crate::clean_path;
 use crate::session::{safe_session_id, sessions_dir};
@@ -214,9 +214,18 @@ fn assess_centrality(graph: &Graph, rel: &str) -> Option<GuardAssessment> {
 
     // In-degree per file: graph_view import edges run importer(source) → imported(target), so a
     // file's in-degree (its dependents) is the number of import edges that point AT it.
+    // Only code counts as a dependent: a README that links to a file, or a CI workflow that
+    // runs it, does not break when the file changes the way an importer does (ADR-0007).
+    let code_like = |category: &str| FileCategory::new(category).is_code_like();
+    let code_files: HashSet<&str> = view
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File && code_like(&n.category))
+        .map(|n| n.path.as_str())
+        .collect();
     let mut in_degree: HashMap<&str, usize> = HashMap::new();
     for e in &view.edges {
-        if e.kind == EdgeKind::Import {
+        if e.kind == EdgeKind::Import && code_files.contains(e.source.as_str()) {
             *in_degree.entry(e.target.as_str()).or_insert(0) += 1;
         }
     }
@@ -229,7 +238,8 @@ fn assess_centrality(graph: &Graph, rel: &str) -> Option<GuardAssessment> {
     let mut exact: Option<(usize, bool)> = None;
     let mut ci_match: Option<(usize, bool)> = None;
     for n in &view.nodes {
-        if n.kind != NodeKind::File {
+        // Supporting files are neither measured nor guarded.
+        if n.kind != NodeKind::File || !code_like(&n.category) {
             continue;
         }
         let d = in_degree.get(n.path.as_str()).copied().unwrap_or(0);

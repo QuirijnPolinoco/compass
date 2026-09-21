@@ -53,6 +53,54 @@ pub enum EdgeConfidence {
     Heuristic,
 }
 
+/// What kind of file a node is — `code`, `markup`, `config`, `data`, `contract`, … (ADR-0007).
+///
+/// An open string like [`LanguageId`], so a new file type never needs a core change. Core reads
+/// exactly **one bit** of it, [`is_code_like`](Self::is_code_like): everything that measures
+/// *dependency* (blast radius, cycles, hubs, isolated files, communities, context seeding)
+/// looks only at code-like files, so a README or a CSV can be in the map without ever counting
+/// as a dependent. The string itself is for presentation: the map's legend and hide/show.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FileCategory(String);
+
+impl FileCategory {
+    pub fn new(category: impl Into<String>) -> Self {
+        Self(category.into())
+    }
+
+    /// Source code — the default for every language extractor.
+    pub fn code() -> Self {
+        Self::new("code")
+    }
+
+    /// Markup and styling that is part of the program's structure (HTML, CSS).
+    pub fn markup() -> Self {
+        Self::new("markup")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether files of this category take part in dependency metrics. Everything else is a
+    /// *supporting* file: mapped and navigable, but invisible to those metrics.
+    pub fn is_code_like(&self) -> bool {
+        matches!(self.as_str(), "code" | "markup")
+    }
+}
+
+impl Default for FileCategory {
+    fn default() -> Self {
+        Self::code()
+    }
+}
+
+impl std::fmt::Display for FileCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A mapped source file (graph node).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
@@ -60,6 +108,9 @@ pub struct File {
     /// Repo-relative path, forward-slash normalized for stable cross-platform output.
     pub path: PathBuf,
     pub language: LanguageId,
+    /// Absent in graphs cached before categories existed → `code`, which is what they all were.
+    #[serde(default)]
+    pub category: FileCategory,
     /// Hash of the file contents — drives incremental staleness detection.
     pub content_hash: u64,
 }
@@ -134,13 +185,26 @@ impl Graph {
         Self::default()
     }
 
+    /// Add a source-code file (category [`FileCategory::code`]).
     pub fn add_file(&mut self, path: PathBuf, language: LanguageId, content_hash: u64) -> FileId {
+        self.add_file_in(path, language, FileCategory::code(), content_hash)
+    }
+
+    /// Add a file of an explicit [`FileCategory`].
+    pub fn add_file_in(
+        &mut self,
+        path: PathBuf,
+        language: LanguageId,
+        category: FileCategory,
+        content_hash: u64,
+    ) -> FileId {
         let id = FileId(self.files.len() as u32);
         self.by_path.insert(path.clone(), id);
         self.files.push(File {
             id,
             path,
             language,
+            category,
             content_hash,
         });
         id
@@ -215,10 +279,29 @@ impl Graph {
         self.by_path = self.files.iter().map(|f| (f.path.clone(), f.id)).collect();
     }
 
-    /// Undirected adjacency over import edges, indexed by `FileId.0`. Self-loops dropped.
+    /// Whether `id` is a code-like file ([`FileCategory::is_code_like`]). Unknown ids are not.
+    fn is_code_like(&self, id: FileId) -> bool {
+        self.files
+            .get(id.0 as usize)
+            .is_some_and(|f| f.category.is_code_like())
+    }
+
+    /// The import edges that express a **dependency**: both ends are code-like. Every metric
+    /// (blast radius, cycles, hubs, degree, communities, isolated files) reads these — never
+    /// `self.imports` directly — so supporting files can't distort them (ADR-0007 §2).
+    /// Navigation queries (`file_dependencies`, `subgraph`, `shortest_path`, the map) still see
+    /// every edge.
+    fn dependency_imports(&self) -> impl Iterator<Item = (FileId, FileId, EdgeConfidence)> + '_ {
+        self.imports
+            .iter()
+            .copied()
+            .filter(|&(a, b, _)| self.is_code_like(a) && self.is_code_like(b))
+    }
+
+    /// Undirected adjacency over dependency edges, indexed by `FileId.0`. Self-loops dropped.
     fn import_adjacency(&self) -> Vec<Vec<FileId>> {
         let mut adj: Vec<Vec<FileId>> = vec![Vec::new(); self.files.len()];
-        for &(a, b, _) in &self.imports {
+        for (a, b, _) in self.dependency_imports() {
             if a == b {
                 continue;
             }
@@ -245,7 +328,23 @@ impl Graph {
             .iter()
             .map(|nbrs| nbrs.iter().map(|f| (f.0 as usize, 1.0)).collect())
             .collect();
-        let groups = louvain_communities(&weighted);
+        let mut groups = louvain_communities(&weighted);
+
+        // A supporting file has no dependency edges, so Louvain leaves it alone in a community
+        // of its own. Put it with the first code-like file it is connected to instead — a
+        // dataset belongs, visually, with the script that reads it.
+        for &(a, b, _) in &self.imports {
+            for (supporting, other) in [(a, b), (b, a)] {
+                if !self.is_code_like(supporting) && self.is_code_like(other) {
+                    let joined = groups[other.0 as usize];
+                    let own = groups[supporting.0 as usize];
+                    let alone = groups.iter().filter(|&&g| g == own).count() == 1;
+                    if alone {
+                        groups[supporting.0 as usize] = joined;
+                    }
+                }
+            }
+        }
 
         // A hub connects three or more distinct communities (e.g. a shared util).
         let is_hub: Vec<bool> = (0..n)
@@ -532,7 +631,11 @@ pub struct Overview {
     pub symbol_count: usize,
     pub import_edge_count: usize,
     pub diagnostic_count: usize,
+    /// Per-language counts of the code-like files.
     pub languages: Vec<LanguageStat>,
+    /// Per-type counts of the supporting (non-code) files — data, contracts, config (ADR-0007).
+    #[serde(default)]
+    pub supporting: Vec<LanguageStat>,
     /// The files with the most import connections — where the important logic tends to
     /// live (FR-16/B3). Capped to the top handful.
     pub most_connected: Vec<ConnectedFile>,
@@ -620,6 +723,9 @@ pub struct GraphNode {
     pub path: String,
     /// Language id (files; symbols inherit their file's), if known.
     pub language: Option<String>,
+    /// [`FileCategory`] of the file (symbols inherit their file's) — what the map's legend and
+    /// hide/show toggles are built from.
+    pub category: String,
     /// Symbol kind, for symbol nodes only.
     pub symbol_kind: Option<SymbolKind>,
     /// Structural community id — files that depend on each other share one (ADR-0005).
@@ -722,7 +828,11 @@ pub struct GraphStats {
     pub community_count: usize,
     /// Number of files flagged as community-bridging hubs.
     pub hub_count: usize,
+    /// Per-language counts of the code-like files.
     pub languages: Vec<LanguageStat>,
+    /// Per-type counts of the supporting (non-code) files — data, contracts, config (ADR-0007).
+    #[serde(default)]
+    pub supporting: Vec<LanguageStat>,
     /// The top-10 files with the most import connections (in + out).
     pub most_connected: Vec<ConnectedFile>,
 }
@@ -806,6 +916,7 @@ impl MapQuery for Graph {
             import_edge_count: self.imports.len(),
             diagnostic_count: self.diagnostics.len(),
             languages: self.language_stats(),
+            supporting: self.file_type_stats(false),
             most_connected: self.top_connected(10),
         }
     }
@@ -883,6 +994,7 @@ impl MapQuery for Graph {
                 kind: NodeKind::File,
                 path,
                 language: Some(f.language.as_str().to_string()),
+                category: f.category.as_str().to_string(),
                 symbol_kind: None,
                 group: groups[idx],
                 is_hub: is_hub[idx],
@@ -920,6 +1032,11 @@ impl MapQuery for Graph {
                         .files
                         .get(fidx)
                         .map(|f| f.language.as_str().to_string()),
+                    category: self
+                        .files
+                        .get(fidx)
+                        .map(|f| f.category.as_str().to_string())
+                        .unwrap_or_default(),
                     symbol_kind: Some(s.kind),
                     group: groups.get(fidx).copied().unwrap_or(0),
                     is_hub: false,
@@ -1110,6 +1227,7 @@ impl MapQuery for Graph {
             community_count,
             hub_count,
             languages: self.language_stats(),
+            supporting: self.file_type_stats(false),
             most_connected: self.top_connected(10),
         }
     }
@@ -1184,7 +1302,7 @@ impl MapQuery for Graph {
         // shipped extractor currently emits a file→itself import.)
         let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
         let mut self_loop = vec![false; n];
-        for &(a, b, _) in &self.imports {
+        for (a, b, _) in self.dependency_imports() {
             let (ai, bi) = (a.0 as usize, b.0 as usize);
             if ai == bi {
                 self_loop[ai] = true;
@@ -1255,8 +1373,9 @@ impl MapQuery for Graph {
                 touched[d.file.0 as usize] = true;
             }
         }
+        // Only code-like files can be a smell: a dataset nothing reads yet is not a defect.
         let mut files: Vec<String> = (0..self.files.len())
-            .filter(|&i| !touched[i])
+            .filter(|&i| !touched[i] && self.is_code_like(FileId(i as u32)))
             .filter_map(|i| {
                 self.file_path(FileId(i as u32))
                     .map(|p| p.to_string_lossy().into_owned())
@@ -1269,9 +1388,14 @@ impl MapQuery for Graph {
     fn impact(&self, file: &str) -> Option<Impact> {
         let start = self.file_id(Path::new(file))?;
 
+        // Who is affected is always *code*: a supporting file never counts as a dependent. The
+        // file being changed may be anything, though — "what reads this dataset?" is a fair
+        // question — so only the importing end has to be code-like.
         let mut importers: HashMap<FileId, Vec<FileId>> = HashMap::new();
-        for (from, to, _) in &self.imports {
-            importers.entry(*to).or_default().push(*from);
+        for &(from, to, _) in &self.imports {
+            if self.is_code_like(from) {
+                importers.entry(to).or_default().push(from);
+            }
         }
 
         // Breadth-first over "is imported by", so each file gets its shortest distance.
@@ -1398,8 +1522,18 @@ impl Graph {
     /// Per-language file counts, sorted by count desc then language id asc. Shared by
     /// [`overview`](MapQuery::overview) and [`graph_stats`](MapQuery::graph_stats).
     fn language_stats(&self) -> Vec<LanguageStat> {
+        self.file_type_stats(true)
+    }
+
+    /// Per-type file counts for the code-like files (`code_like`) or the supporting ones, so a
+    /// repo with 2,000 JSON fixtures still reads as the TypeScript project it is.
+    fn file_type_stats(&self, code_like: bool) -> Vec<LanguageStat> {
         let mut counts: HashMap<&str, usize> = HashMap::new();
-        for f in &self.files {
+        for f in self
+            .files
+            .iter()
+            .filter(|f| f.category.is_code_like() == code_like)
+        {
             *counts.entry(f.language.as_str()).or_insert(0) += 1;
         }
         let mut languages: Vec<LanguageStat> = counts
@@ -1439,10 +1573,10 @@ impl Graph {
         most_connected
     }
 
-    /// File import degree (in + out), keyed by `FileId`.
+    /// File dependency degree (in + out), keyed by `FileId`. Supporting files have none.
     fn degrees(&self) -> HashMap<FileId, usize> {
         let mut deg: HashMap<FileId, usize> = HashMap::new();
-        for &(a, b, _) in &self.imports {
+        for (a, b, _) in self.dependency_imports() {
             *deg.entry(a).or_insert(0) += 1;
             *deg.entry(b).or_insert(0) += 1;
         }
@@ -1518,7 +1652,10 @@ impl Graph {
     /// The `max` most import-connected files (degree desc, id as tiebreak).
     fn most_connected_ids(&self, max: usize) -> Vec<FileId> {
         let deg = self.degrees();
-        let mut ids: Vec<FileId> = (0..self.files.len() as u32).map(FileId).collect();
+        let mut ids: Vec<FileId> = (0..self.files.len() as u32)
+            .map(FileId)
+            .filter(|&id| self.is_code_like(id))
+            .collect();
         ids.sort_by(|&a, &b| {
             let (da, db) = (
                 deg.get(&a).copied().unwrap_or(0),
@@ -2348,5 +2485,139 @@ mod tests {
         let a = pack.files.iter().find(|f| f.path == "a.rs").expect("a.rs");
         assert_eq!(a.dependents, ["b.rs"]);
         assert_eq!(a.affected_count, 2);
+    }
+
+    /// A small code graph plus supporting files wired into it:
+    ///   a.rs -> b.rs -> c.rs            (code chain)
+    ///   a.rs -> data.csv                (code reads data)
+    ///   README.md -> a.rs, README.md -> c.rs, docs.md <-> README.md   (docs link to code + each other)
+    ///   lonely.rs, unused.csv           (no edges)
+    fn graph_with_supporting_files() -> Graph {
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        let data = FileCategory::new("data");
+        let docs = FileCategory::new("docs");
+        let a = g.add_file(PathBuf::from("a.rs"), rs.clone(), 0);
+        let b = g.add_file(PathBuf::from("b.rs"), rs.clone(), 0);
+        let c = g.add_file(PathBuf::from("c.rs"), rs.clone(), 0);
+        g.add_file(PathBuf::from("lonely.rs"), rs, 0);
+        let csv = g.add_file_in(
+            PathBuf::from("data.csv"),
+            LanguageId::new("csv"),
+            data.clone(),
+            0,
+        );
+        g.add_file_in(PathBuf::from("unused.csv"), LanguageId::new("csv"), data, 0);
+        let readme = g.add_file_in(
+            PathBuf::from("README.md"),
+            LanguageId::new("markdown"),
+            docs.clone(),
+            0,
+        );
+        let guide = g.add_file_in(
+            PathBuf::from("docs.md"),
+            LanguageId::new("markdown"),
+            docs,
+            0,
+        );
+
+        let r = EdgeConfidence::Resolved;
+        g.add_import(a, b, r);
+        g.add_import(b, c, r);
+        g.add_import(a, csv, r);
+        g.add_import(readme, a, r);
+        g.add_import(readme, c, r);
+        g.add_import(readme, guide, r);
+        g.add_import(guide, readme, r);
+        g
+    }
+
+    #[test]
+    fn only_code_like_categories_take_part_in_metrics() {
+        assert!(FileCategory::code().is_code_like());
+        assert!(FileCategory::markup().is_code_like());
+        assert!(FileCategory::default().is_code_like());
+        for supporting in ["data", "docs", "config", "contract"] {
+            assert!(
+                !FileCategory::new(supporting).is_code_like(),
+                "{supporting}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_supporting_file_is_never_a_dependent() {
+        let g = graph_with_supporting_files();
+
+        // README.md links to c.rs, but only code is *affected* by changing it.
+        let impact = g.impact("c.rs").expect("mapped");
+        let affected: Vec<&str> = impact.affected.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(affected, ["b.rs", "a.rs"]);
+
+        // The changed file itself may be supporting: "what reads this dataset?"
+        let readers = g.impact("data.csv").expect("mapped");
+        let affected: Vec<&str> = readers.affected.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(affected, ["a.rs"]);
+
+        // Navigation still sees every edge.
+        let deps = g.file_dependencies("a.rs").expect("mapped");
+        assert_eq!(deps.dependencies, ["b.rs", "data.csv"]);
+        assert_eq!(deps.dependents, ["README.md"]);
+    }
+
+    #[test]
+    fn supporting_files_are_not_cycles_hubs_or_isolated_smells() {
+        let g = graph_with_supporting_files();
+
+        // README.md <-> docs.md link to each other; that is not a circular *dependency*.
+        assert!(g.import_cycles().is_empty());
+
+        // unused.csv has no edges, but only code can be an isolated-file smell.
+        assert_eq!(g.isolated_files(), ["lonely.rs"]);
+
+        // README.md has the most edges of any file, yet it is not "most connected".
+        let top: Vec<String> = g
+            .overview()
+            .most_connected
+            .into_iter()
+            .map(|c| c.file)
+            .collect();
+        assert!(
+            !top.iter()
+                .any(|f| f.ends_with(".md") || f.ends_with(".csv")),
+            "{top:?}"
+        );
+        assert_eq!(top.first().map(String::as_str), Some("b.rs"));
+    }
+
+    #[test]
+    fn overview_counts_supporting_files_apart_from_languages() {
+        let overview = graph_with_supporting_files().overview();
+        let names = |stats: &[LanguageStat]| -> Vec<(String, usize)> {
+            stats
+                .iter()
+                .map(|s| (s.language.to_string(), s.file_count))
+                .collect()
+        };
+        assert_eq!(names(&overview.languages), [("rust".to_string(), 4)]);
+        assert_eq!(
+            names(&overview.supporting),
+            [("csv".to_string(), 2), ("markdown".to_string(), 2)]
+        );
+        assert_eq!(overview.file_count, 8);
+    }
+
+    #[test]
+    fn a_supporting_file_joins_the_community_of_the_code_it_touches() {
+        let g = graph_with_supporting_files();
+        let view = g.graph_view(false);
+        assert_eq!(group_of(&view, "data.csv"), group_of(&view, "a.rs"));
+        let csv = view
+            .nodes
+            .iter()
+            .find(|n| n.path == "data.csv")
+            .expect("node");
+        assert_eq!(csv.category, "data");
+        assert!(!csv.is_hub);
     }
 }

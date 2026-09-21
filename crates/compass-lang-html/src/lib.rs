@@ -18,7 +18,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use compass_core::{LanguageId, Span, SymbolKind};
+use compass_core::{FileCategory, LanguageId, Span, SymbolKind};
 use compass_extract::{
     Detection, ExtractedSymbol, Extraction, Extractor, LangConfig, RawImport, ResolutionContext,
     ResolvedImport,
@@ -34,6 +34,10 @@ pub struct HtmlExtractor;
 impl Extractor for HtmlExtractor {
     fn language_id(&self) -> LanguageId {
         LanguageId::new("html")
+    }
+
+    fn category(&self) -> FileCategory {
+        FileCategory::markup()
     }
 
     fn detection(&self) -> Detection {
