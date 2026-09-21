@@ -79,6 +79,13 @@ the opt-in destructive-edit guard). It only writes per-host config — no teleme
 | Rust | Kotlin | Ruby | PHP | C |
 | C++ | R | CSS | HTML | |
 
+**Supporting files** are mapped too, as a catalog of *what the data is called* — never its
+content — and stay out of every code metric (hidden in the map until you switch them on):
+
+| File type | What is indexed |
+|---|---|
+| CSV / TSV | The header's column names — `find_symbol("customer")` tells you which file has a `Customer_Id` column, and how it's spelled |
+
 Adding a language is a self-contained unit of work behind a stable interface — see
 [CONTRIBUTING.md](CONTRIBUTING.md). More are on the roadmap in [`ProjectInfo.md`](ProjectInfo.md).
 

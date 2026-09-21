@@ -43,6 +43,7 @@ jobs:
           - { feature: lang-r, lang: r }
           - { feature: lang-css, lang: css }
           - { feature: lang-html, lang: html }
+          - { feature: lang-csv, lang: csv }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -50,8 +51,9 @@ jobs:
       - name: Build with only ${{ matrix.feature }}
         run: cargo build -p compass-cli --no-default-features --features ${{ matrix.feature }}
       - name: Assert exactly this language registers
+        # One entry in total — whether it is listed as a language or as a supporting file type.
         run: |
           out=$(cargo run -q -p compass-cli --no-default-features --features ${{ matrix.feature }} -- languages)
           echo "$out"
-          echo "$out" | grep -q "Supported languages (1):"
-          echo "$out" | grep -q -- "- ${{ matrix.lang }}"
+          test "$(echo "$out" | grep -c -- '^  - ')" -eq 1
+          echo "$out" | grep -q -- "^  - ${{ matrix.lang }}$"

@@ -21,6 +21,7 @@ members = [
     "crates/compass-lang-r",
     "crates/compass-lang-css",
     "crates/compass-lang-html",
+    "crates/compass-lang-csv",
 ]
 # The new-language skeleton is intentionally NOT a workspace member: it must never
 # link into the binary, register a fake language, or gate `cargo build --workspace`.
