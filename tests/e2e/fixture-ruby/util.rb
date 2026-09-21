@@ -1,5 +1,5 @@
 class Helper
   def greet
-    "hello from mapai"
+    "hello from compass"
   end
 end

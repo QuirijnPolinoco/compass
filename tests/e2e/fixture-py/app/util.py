@@ -1,5 +1,5 @@
 def helper():
-    return "hello from mapai"
+    return "hello from compass"
 
 
 class Helper:

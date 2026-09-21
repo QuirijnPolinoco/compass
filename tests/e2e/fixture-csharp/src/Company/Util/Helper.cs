@@ -4,7 +4,7 @@ namespace Company.Util
     {
         public string Greet()
         {
-            return "hello from mapai";
+            return "hello from compass";
         }
     }
 }

@@ -2,7 +2,7 @@ package util
 
 // Greeting returns a friendly greeting.
 func Greeting() string {
-	return "hello from mapai"
+	return "hello from compass"
 }
 
 // Helper carries a name.
