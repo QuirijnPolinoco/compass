@@ -6,7 +6,8 @@
 > Compass.
 >
 > Looking for **indexing speed at scale** (does it handle 100k files)? See
-> **[scaling.md](scaling.md)**.
+> **[scaling.md](scaling.md)**. For a head-to-head with graphify and plain grep (re-index speed,
+> retrieval, agent tokens and time), see **[vs-graphify.md](vs-graphify.md)**.
 
 ## TL;DR
 
