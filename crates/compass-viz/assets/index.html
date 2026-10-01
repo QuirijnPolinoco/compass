@@ -14,10 +14,22 @@
   <header id="toolbar">
     <span id="brand"><span aria-hidden="true">🧭</span>&nbsp;Compass</span>
     <div class="search-field">
-      <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
-        <path fill="currentColor" d="M11.74 10.34a6 6 0 1 0-1.4 1.4l3.2 3.2a1 1 0 0 0 1.42-1.42l-3.22-3.18ZM3 7a4 4 0 1 1 8 0 4 4 0 0 1-8 0Z"/>
-      </svg>
-      <input id="search" type="search" placeholder="Find a file…" aria-label="Find a file" autocomplete="off" spellcheck="false">
+      <span class="search-box">
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
+          <path fill="currentColor" d="M11.74 10.34a6 6 0 1 0-1.4 1.4l3.2 3.2a1 1 0 0 0 1.42-1.42l-3.22-3.18ZM3 7a4 4 0 1 1 8 0 4 4 0 0 1-8 0Z"/>
+        </svg>
+        <input id="search" type="search" placeholder="Find a file…" aria-label="Find a file" autocomplete="off" spellcheck="false"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-results">
+      </span>
+      <!-- Ranked results for a described task (live mode only; a snapshot has no ranker). -->
+      <div id="search-panel" hidden>
+        <ul id="search-results" role="listbox" aria-label="Files ranked for this search"></ul>
+        <p id="search-state" class="search-state" aria-live="polite" hidden></p>
+        <p class="search-hint" aria-hidden="true">
+          <span id="search-count"></span>
+          <span><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> show · <kbd>Esc</kbd> close</span>
+        </p>
+      </div>
     </div>
     <label class="control">
       <span>Color</span>
