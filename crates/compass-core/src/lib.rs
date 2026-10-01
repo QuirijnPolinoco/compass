@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod rank;
+
 /// Open identifier for a language (e.g. `"go"`).
 ///
 /// Deliberately NOT an enum: languages are plugins, so adding one must never edit core
@@ -802,13 +804,26 @@ pub struct ContextRequest {
     pub max_files: usize,
 }
 
+/// A symbol shown in a context pack, with the line it is defined on so an agent can open the
+/// file right there instead of reading it from the top.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSymbol {
+    pub name: String,
+    /// 1-based line of the definition.
+    pub line: usize,
+}
+
 /// One file in a context pack: enough to reason about it without opening it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextFile {
     pub path: String,
     pub language: Option<String>,
-    /// Defined symbol names (capped).
-    pub symbols: Vec<String>,
+    /// Defined symbols (capped). For a query, the symbols that match it come first and are the
+    /// only ones listed when there are any.
+    pub symbols: Vec<ContextSymbol>,
+    /// How many symbols the file defines in total (`symbols` is capped).
+    #[serde(default)]
+    pub symbol_count: usize,
     /// Files this file imports.
     pub depends_on: Vec<String>,
     /// Files that import this file (capped).
@@ -1207,10 +1222,15 @@ impl MapQuery for Graph {
 
     fn context(&self, request: &ContextRequest) -> ContextPack {
         let max = request.max_files.max(1);
+        let terms = request
+            .query
+            .as_deref()
+            .map(rank::query_terms)
+            .unwrap_or_default();
         let (ids, selected_by) = if !request.seeds.is_empty() {
             (self.context_by_seeds(&request.seeds, max), "seeds")
-        } else if let Some(q) = request.query.as_deref().filter(|q| !q.trim().is_empty()) {
-            let ranked = self.context_by_query(q, max);
+        } else if !terms.is_empty() {
+            let ranked = self.context_by_query(&terms, max);
             if ranked.is_empty() {
                 (self.most_connected_ids(max), "most-connected")
             } else {
@@ -1220,7 +1240,10 @@ impl MapQuery for Graph {
             (self.most_connected_ids(max), "most-connected")
         };
 
-        let files = ids.iter().map(|&id| self.context_file(id)).collect();
+        let files = ids
+            .iter()
+            .map(|&id| self.context_file(id, &terms))
+            .collect();
         let overview = self.overview();
         ContextPack {
             file_count: overview.file_count,
@@ -1740,52 +1763,132 @@ impl Graph {
         ordered
     }
 
-    /// Files ranked by query-term matches against path + symbol names (centrality tiebreak).
-    fn context_by_query(&self, query: &str, max: usize) -> Vec<FileId> {
-        let terms = tokenize(query);
+    /// Files ranked by how well their path and symbol names cover the query terms (see the
+    /// [`rank`] module): each term is weighted by its inverse document frequency, a hit in the
+    /// file name counts most, then a directory, then symbols (capped per term so a file full of
+    /// `*_order` symbols cannot win on volume). Files that cover more of the distinct terms rank
+    /// higher; tests and supporting files are demoted unless the query is about them. Files
+    /// scoring well below the best are cut, so a sharp query yields a short list.
+    fn context_by_query(&self, terms: &[String], max: usize) -> Vec<FileId> {
         if terms.is_empty() {
             return Vec::new();
         }
-        let deg = self.degrees();
-        let mut syms_by_file: HashMap<FileId, Vec<String>> = HashMap::new();
+        // Per file: each symbol's words and how much a match on it counts.
+        let mut sym_words: HashMap<FileId, Vec<(Vec<String>, f64)>> = HashMap::new();
         for s in &self.symbols {
-            syms_by_file
-                .entry(s.file)
-                .or_default()
-                .push(s.name.to_lowercase());
+            let words = rank::identifier_words(&s.name);
+            let weight = rank::symbol_weight(&words);
+            sym_words.entry(s.file).or_default().push((words, weight));
         }
 
+        // Per file: (name words, directory words) of its path.
+        let docs: Vec<(Vec<String>, Vec<String>)> = self
+            .files
+            .iter()
+            .map(|f| {
+                let path = f.path.to_string_lossy();
+                let (dir, name) = path.rsplit_once('/').unwrap_or(("", &path));
+                (rank::identifier_words(name), rank::identifier_words(dir))
+            })
+            .collect();
+
+        // Per term, per file: (in name, in dir, weighted count of matching symbols).
+        let hits: Vec<Vec<(bool, bool, f64)>> = terms
+            .iter()
+            .map(|t| {
+                self.files
+                    .iter()
+                    .zip(&docs)
+                    .map(|(f, (name, dir))| {
+                        let symbol_hits = sym_words.get(&f.id).map_or(0.0, |syms| {
+                            syms.iter()
+                                .filter(|(w, _)| rank::any_match(t, w))
+                                .map(|(_, weight)| weight)
+                                .sum()
+                        });
+                        (
+                            rank::any_match(t, name),
+                            rank::any_match(t, dir),
+                            symbol_hits,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let n = self.files.len() as f64;
+        let idf: Vec<f64> = hits
+            .iter()
+            .map(|per_file| {
+                let df = per_file
+                    .iter()
+                    .filter(|(name, dir, syms)| *name || *dir || *syms > 0.0)
+                    .count();
+                (1.0 + n / (df.max(1) as f64)).ln()
+            })
+            .collect();
+        let about_tests = terms.iter().any(|t| t.starts_with("test") || t == "spec");
+        let about_markup = rank::about_markup(terms);
+
+        let deg = self.degrees();
         let mut scored: Vec<(f64, FileId)> = Vec::new();
-        for f in &self.files {
-            let path = f.path.to_string_lossy().to_lowercase();
+        for (fi, f) in self.files.iter().enumerate() {
             let mut score = 0.0;
-            for t in &terms {
-                // A path/name match is the strongest signal that this file IS the target.
-                if path.contains(t) {
-                    score += 5.0;
+            let mut covered = 0usize;
+            for (ti, w) in idf.iter().enumerate() {
+                let (in_name, in_dir, symbol_hits) = hits[ti][fi];
+                let mut s = 0.0;
+                if in_name {
+                    s += 3.0 * w;
+                } else if in_dir {
+                    s += 1.5 * w;
                 }
-                // Symbol-name matches help, but cap per term so a big file full of `*_order`
-                // symbols can't outrank the conceptually-relevant file (no raw term-frequency).
-                if let Some(syms) = syms_by_file.get(&f.id) {
-                    let hits = syms.iter().filter(|n| n.contains(t)).count().min(3);
-                    score += hits as f64;
+                if symbol_hits > 0.0 {
+                    let hits = symbol_hits.min(3.0);
+                    s += w * (hits.min(1.0) + 0.5 * (hits - 1.0).max(0.0));
                 }
+                if s > 0.0 {
+                    covered += 1;
+                }
+                score += s;
             }
-            if score > 0.0 {
-                score += deg.get(&f.id).copied().unwrap_or(0) as f64 * 0.1;
-                scored.push((score, f.id));
+            if score == 0.0 {
+                continue;
             }
+            score *= 0.5 + covered as f64 / terms.len() as f64;
+            let path = f.path.to_string_lossy();
+            if !about_tests && rank::is_test_path(&path) {
+                score *= 0.5;
+            }
+            if !f.category.is_code_like() {
+                score *= 0.4;
+            } else if f.category != FileCategory::code() && !about_markup {
+                score *= 0.5;
+            }
+            // Centrality only breaks near-ties.
+            score += (deg.get(&f.id).copied().unwrap_or(0) as f64).ln_1p() * 0.05;
+            scored.push((score, f.id));
         }
         scored.sort_by(|a, b| {
             b.0.partial_cmp(&a.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.1 .0.cmp(&b.1 .0))
         });
-        scored.into_iter().take(max).map(|(_, id)| id).collect()
+        let floor = scored
+            .first()
+            .map_or(0.0, |(best, _)| best * QUERY_SCORE_FLOOR);
+        scored
+            .into_iter()
+            .take_while(|(s, _)| *s >= floor)
+            .take(max)
+            .map(|(_, id)| id)
+            .collect()
     }
 
-    /// Build a [`ContextFile`] (symbols + deps/dependents) for one file.
-    fn context_file(&self, id: FileId) -> ContextFile {
+    /// Build a [`ContextFile`] (symbols + deps/dependents) for one file. With query `terms`, the
+    /// symbols that match them are listed (best first, with their lines); otherwise, or when none
+    /// match, the file's first symbols are.
+    fn context_file(&self, id: FileId, terms: &[String]) -> ContextFile {
         let path = self
             .file_path(id)
             .map(|p| p.to_string_lossy().into_owned())
@@ -1794,13 +1897,37 @@ impl Graph {
             .files
             .get(id.0 as usize)
             .map(|f| f.language.as_str().to_string());
-        let mut symbols: Vec<String> = self
-            .symbols
+        let defined: Vec<&Symbol> = self.symbols.iter().filter(|s| s.file == id).collect();
+        let symbol_count = defined.len();
+        let shown = |s: &Symbol| ContextSymbol {
+            name: s.name.clone(),
+            line: s.span.start_row + 1,
+        };
+        let mut matched: Vec<(f64, &Symbol)> = defined
             .iter()
-            .filter(|s| s.file == id)
-            .map(|s| s.name.clone())
+            .map(|s| {
+                let words = rank::identifier_words(&s.name);
+                let n = terms.iter().filter(|t| rank::any_match(t, &words)).count();
+                (n as f64 * rank::symbol_weight(&words), *s)
+            })
+            .filter(|(n, _)| *n > 0.0)
             .collect();
-        symbols.truncate(15);
+        // Most distinct terms first, ordinary names before test-case sentences; stable, so ties
+        // keep source order.
+        matched.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let symbols: Vec<ContextSymbol> = if matched.is_empty() {
+            defined
+                .iter()
+                .take(CONTEXT_SYMBOLS)
+                .map(|s| shown(s))
+                .collect()
+        } else {
+            matched
+                .iter()
+                .take(CONTEXT_SYMBOLS)
+                .map(|(_, s)| shown(s))
+                .collect()
+        };
 
         let (mut depends_on, mut dependents) = (Vec::new(), Vec::new());
         if let Some(fd) = self.file_dependencies(&path) {
@@ -1813,6 +1940,7 @@ impl Graph {
             path,
             language,
             symbols,
+            symbol_count,
             depends_on,
             dependents,
             affected_count,
@@ -1820,16 +1948,12 @@ impl Graph {
     }
 }
 
-/// Distinct lowercased query terms of length ≥ 3 (split on non-alphanumerics).
-fn tokenize(query: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .map(|w| w.to_lowercase())
-        .filter(|w| seen.insert(w.clone()))
-        .collect()
-}
+/// How many symbols a context-pack file lists.
+const CONTEXT_SYMBOLS: usize = 8;
+
+/// A query-ranked file is kept only if it scores at least this fraction of the best file, so a
+/// precise prompt yields a few strong candidates instead of a padded list.
+const QUERY_SCORE_FLOOR: f64 = 0.3;
 
 #[cfg(test)]
 mod tests {
@@ -2098,6 +2222,87 @@ mod tests {
         // Only the src/auth/* files match the term.
         assert!(pack.files.iter().all(|f| f.path.contains("auth")));
         assert!(pack.files.iter().any(|f| f.path == "src/auth/login.rs"));
+    }
+
+    /// Files and their symbols for ranking tests; no imports needed.
+    fn ranking_graph(files: &[(&str, &[&str])]) -> Graph {
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        for (path, symbols) in files {
+            let fid = g.add_file(PathBuf::from(path), rs.clone(), 0);
+            for (row, name) in symbols.iter().enumerate() {
+                let span = Span {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_row: row * 10,
+                    start_col: 0,
+                };
+                g.add_symbol(name.to_string(), SymbolKind::Function, fid, span);
+            }
+        }
+        g
+    }
+
+    fn ranked(g: &Graph, query: &str) -> Vec<String> {
+        g.context(&ContextRequest {
+            query: Some(query.into()),
+            seeds: vec![],
+            max_files: 8,
+        })
+        .files
+        .into_iter()
+        .map(|f| f.path)
+        .collect()
+    }
+
+    #[test]
+    fn context_by_query_weighs_rare_terms_over_common_ones() {
+        // Every file is about `risk`; only one is about `drawdown`.
+        let g = ranking_graph(&[
+            ("src/risk/limits.rs", &["risk_limit", "risk_check"]),
+            ("src/risk/report.rs", &["risk_report", "risk_summary"]),
+            ("src/risk/caps.rs", &["drawdown_cap"]),
+        ]);
+        assert_eq!(
+            ranked(&g, "raise the risk drawdown cap")[0],
+            "src/risk/caps.rs"
+        );
+    }
+
+    #[test]
+    fn context_by_query_matches_words_not_substrings_and_skips_filler() {
+        let g = ranking_graph(&[
+            ("src/theme.rs", &["escape_html"]),
+            ("src/cookie.rs", &["COOKIE_NAME"]),
+        ]);
+        // `the` is filler and `cap` is not a word in `escape`, so only the cookie file matches.
+        assert_eq!(ranked(&g, "the cap on the cookie"), vec!["src/cookie.rs"]);
+    }
+
+    #[test]
+    fn context_by_query_demotes_tests_and_lists_matched_symbols_with_lines() {
+        let g = ranking_graph(&[
+            (
+                "src/storm_tests.rs",
+                &["rejection_storm_fires_after_three_rejected_orders"],
+            ),
+            ("src/storm.rs", &["new", "RejectionStormConfig", "observe"]),
+        ]);
+        let pack = g.context(&ContextRequest {
+            query: Some("when too many orders get rejected".into()),
+            seeds: vec![],
+            max_files: 8,
+        });
+        assert_eq!(pack.files[0].path, "src/storm.rs");
+        // Only the matching symbol is listed, at its 1-based line.
+        assert_eq!(
+            pack.files[0].symbols,
+            vec![ContextSymbol {
+                name: "RejectionStormConfig".into(),
+                line: 11
+            }]
+        );
+        assert_eq!(pack.files[0].symbol_count, 3);
     }
 
     #[test]

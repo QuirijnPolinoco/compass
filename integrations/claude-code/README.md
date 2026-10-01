@@ -40,7 +40,7 @@ absolute path in the `command`.
 ### Tune it
 
 ```sh
-compass context --hook --max 8     # cap how many files are injected (default 12)
+compass context --hook --max 5     # cap how many files are injected (default 8)
 compass context . --query "add a retry to the HTTP client"      # try the ranking by hand
 compass context . --file crates/foo/src/bar.rs                 # blast-radius around a file
 ```
