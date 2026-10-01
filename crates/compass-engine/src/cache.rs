@@ -12,7 +12,8 @@ use crate::index::ExtractionCache;
 /// caches reindex. v2: `Graph` gained `calls` edges and the per-file extraction cache landed.
 /// v3: import/call edges gained a trailing `EdgeConfidence` (the serialized tuple shape changed).
 /// v4: `SymbolKind::Variant`, and extractors emit fields and variants that older caches lack.
-pub const CACHE_FORMAT_VERSION: u32 = 4;
+/// v5: doc summaries for files and symbols.
+pub const CACHE_FORMAT_VERSION: u32 = 5;
 
 /// The Compass release that wrote a cache file. Extractors improve between releases without the
 /// on-disk *format* changing (a language starts emitting calls, a new kind of symbol, …), and an
