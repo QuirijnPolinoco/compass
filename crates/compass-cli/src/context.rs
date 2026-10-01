@@ -18,7 +18,7 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
     let mut path = PathBuf::from(".");
     let mut query: Option<String> = None;
     let mut seeds: Vec<String> = Vec::new();
-    let mut max_files = 12usize;
+    let mut max_files = 8usize;
     let mut hook = false;
     let mut fresh = false;
 
@@ -266,18 +266,31 @@ fn render_context_markdown(path: &Path, pack: &ContextPack) -> String {
             .join(", ");
         let _ = writeln!(out, "Most-connected: {mc}");
     }
-    let _ = writeln!(out, "\nRelevant files (selected by {}):", pack.selected_by);
+    let _ = writeln!(
+        out,
+        "\nRelevant files (selected by {}; best first; symbols as name:line):",
+        pack.selected_by
+    );
     for f in &pack.files {
         let lang = f.language.as_deref().unwrap_or("?");
         let mut line = format!("- {} [{lang}]", f.path);
         if !f.symbols.is_empty() {
-            let _ = write!(line, " — symbols: {}", f.symbols.join(", "));
+            let shown = f
+                .symbols
+                .iter()
+                .map(|s| format!("{}:{}", s.name, s.line))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(line, " — {shown}");
+            if f.symbol_count > f.symbols.len() {
+                let _ = write!(line, " (+{} more)", f.symbol_count - f.symbols.len());
+            }
         }
         if !f.depends_on.is_empty() {
-            let _ = write!(line, " — imports: {}", f.depends_on.join(", "));
+            let _ = write!(line, " — imports: {}", capped_list(&f.depends_on));
         }
         if !f.dependents.is_empty() {
-            let _ = write!(line, " — imported by: {}", f.dependents.join(", "));
+            let _ = write!(line, " — imported by: {}", capped_list(&f.dependents));
         }
         // Only worth the tokens when the blast radius reaches past the importers just listed.
         if f.affected_count > f.dependents.len() {
@@ -288,10 +301,31 @@ fn render_context_markdown(path: &Path, pack: &ContextPack) -> String {
     out
 }
 
+/// How many imports / importers a context line names before summarising the rest. Every path
+/// costs prompt tokens on every injection, and past a handful they stop helping an agent decide
+/// where to look; the blast-radius count still reports the full reach.
+const LISTED_NEIGHBOURS: usize = 3;
+
+/// The first [`LISTED_NEIGHBOURS`] of `items`, with a `(+N more)` tail for the rest.
+fn capped_list(items: &[String]) -> String {
+    let shown = items
+        .iter()
+        .take(LISTED_NEIGHBOURS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hidden = items.len().saturating_sub(LISTED_NEIGHBOURS);
+    if hidden > 0 {
+        format!("{shown} (+{hidden} more)")
+    } else {
+        shown
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::ContextFile;
+    use compass_core::{ContextFile, ContextSymbol};
 
     fn pack_with(file: ContextFile) -> ContextPack {
         ContextPack {
@@ -308,10 +342,28 @@ mod tests {
             path: "src/util.rs".to_string(),
             language: Some("rust".to_string()),
             symbols: Vec::new(),
+            symbol_count: 0,
             depends_on: Vec::new(),
             dependents: dependents.iter().map(ToString::to_string).collect(),
             affected_count,
         }
+    }
+
+    #[test]
+    fn symbols_carry_their_line_and_long_lists_are_summarised() {
+        let mut f = file(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"], 5);
+        f.symbols = vec![ContextSymbol {
+            name: "medium_risk".to_string(),
+            line: 120,
+        }];
+        f.symbol_count = 14;
+        let out = render_context_markdown(Path::new("."), &pack_with(f));
+        assert!(out.contains("— medium_risk:120 (+13 more)"), "{out}");
+        assert!(
+            out.contains("imported by: a.rs, b.rs, c.rs (+2 more)"),
+            "{out}"
+        );
+        assert!(!out.contains("d.rs"), "{out}");
     }
 
     #[test]
