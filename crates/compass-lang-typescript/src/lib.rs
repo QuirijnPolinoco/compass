@@ -420,6 +420,23 @@ impl Visitor<'_> {
             "type_alias_declaration" => {
                 push_named(node, "name", SymbolKind::Other, self.src, self.symbols)
             }
+            // Class fields. The TSX grammar also parses plain JS, so this covers JS fields too.
+            "public_field_definition" => self.push_member(node, SymbolKind::Field),
+            // Interface members and the members of `type X = { .. }`. Object types in
+            // annotations stay anonymous, and method signatures are a different node kind.
+            "property_signature" if is_declared_member(node) => {
+                self.push_member(node, SymbolKind::Field)
+            }
+            "enum_body" => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    match child.kind() {
+                        "property_identifier" => self.push_name_node(child, SymbolKind::Variant),
+                        "enum_assignment" => self.push_member(child, SymbolKind::Variant),
+                        _ => {}
+                    }
+                }
+            }
             "import_statement" | "export_statement" => {
                 // The module specifier is the `source` string child (absent for re-exports
                 // without `from`, and for plain `export { x }`).
@@ -471,6 +488,29 @@ impl Visitor<'_> {
             current_fn
         };
         self.recurse(body, caller);
+    }
+
+    /// Push the member named by `member`'s `name` field. Computed and string-literal names
+    /// are skipped: they have no stable identifier to search for.
+    fn push_member(&mut self, member: Node, kind: SymbolKind) {
+        if let Some(name) = member.child_by_field_name("name") {
+            if matches!(
+                name.kind(),
+                "property_identifier" | "private_property_identifier"
+            ) {
+                self.push_name_node(name, kind);
+            }
+        }
+    }
+
+    fn push_name_node(&mut self, name: Node, kind: SymbolKind) {
+        if let Ok(text) = name.utf8_text(self.src) {
+            self.symbols.push(ExtractedSymbol {
+                name: text.to_string(),
+                kind,
+                span: span_of(name),
+            });
+        }
     }
 
     /// `require("x")` (CommonJS) and dynamic `import("x")` — a call whose callee is the
@@ -586,6 +626,20 @@ fn push_named(
     }
 }
 
+/// Whether a `property_signature` belongs to an interface or a type alias's object type.
+fn is_declared_member(node: Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "interface_body" => true,
+        "object_type" => parent
+            .parent()
+            .is_some_and(|p| p.kind() == "type_alias_declaration"),
+        _ => false,
+    }
+}
+
 fn span_of(node: Node) -> Span {
     let start = node.start_position();
     Span {
@@ -599,7 +653,9 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method, Other};
+    use compass_core::SymbolKind::{
+        Class, Enum, Field, Function, Interface, Method, Other, Variant,
+    };
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -676,6 +732,8 @@ type Id = string;
             ("handle".to_string(), Method),
             ("Greeter".to_string(), Interface),
             ("Color".to_string(), Enum),
+            ("Red".to_string(), Variant),
+            ("Green".to_string(), Variant),
             ("Id".to_string(), Other), // type_alias_declaration
         ];
         want.sort();
@@ -975,5 +1033,62 @@ trim("module scope");
             .map(|i| i.specifier)
             .collect();
         assert_eq!(specs, ["./setup", "./lazy"]);
+    }
+
+    const MEMBERS_SAMPLE: &str = r#"
+class Config {
+    maxDrawdown = 5;
+    #secret: string = "x";
+    [computed]: number = 1;
+    run() { helper(); }
+}
+
+interface Options {
+    retries: number;
+    send(): void;
+    [key: string]: unknown;
+}
+
+type Shape = {
+    width: number;
+    height?: number;
+};
+
+function take(p: { inline: string }) {}
+
+enum Level { Low, High = 3 }
+
+const obj = { literalKey: 1 };
+"#;
+
+    #[test]
+    fn emits_fields_and_variants_with_lines() {
+        let ex = extract(MEMBERS_SAMPLE);
+        let got: Vec<(String, SymbolKind, usize)> = ex
+            .symbols
+            .iter()
+            .filter(|s| matches!(s.kind, Field | Variant))
+            .map(|s| (s.name.clone(), s.kind, s.span.start_row + 1))
+            .collect();
+        let want = vec![
+            ("maxDrawdown".to_string(), Field, 3),
+            ("#secret".to_string(), Field, 4),
+            ("retries".to_string(), Field, 10),
+            ("width".to_string(), Field, 16),
+            ("height".to_string(), Field, 17),
+            ("Low".to_string(), Variant, 22),
+            ("High".to_string(), Variant, 22),
+        ];
+        // Absent: the computed key, the method signature, the index signature, the inline
+        // annotation type and the object literal key.
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let ex = extract(MEMBERS_SAMPLE);
+        assert_eq!(ex.calls.len(), 1);
+        let caller = &ex.symbols[ex.calls[0].caller];
+        assert_eq!((caller.name.as_str(), caller.kind), ("run", Method));
     }
 }

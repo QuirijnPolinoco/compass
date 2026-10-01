@@ -156,6 +156,10 @@ impl Visitor<'_> {
             "namespace_definition" => {
                 push_named(node, "name", SymbolKind::Module, self.src, self.symbols);
             }
+            "enumerator" => {
+                push_named(node, "name", SymbolKind::Variant, self.src, self.symbols);
+            }
+            "field_declaration" => self.push_fields(node),
             "function_definition" => return self.enter_function(node, scope),
             "preproc_include" => {
                 if let Some(path) = node.child_by_field_name("path") {
@@ -188,6 +192,31 @@ impl Visitor<'_> {
             _ => {}
         }
         self.recurse(node, scope);
+    }
+
+    /// One Field per declarator of a data member (`int a, *b;`). A bare `function_declarator`
+    /// is a method declaration, not data; `int (*cb)(int)` is a function-pointer field.
+    fn push_fields(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for declarator in node.children_by_field_name("declarator", &mut cursor) {
+            if declarator.kind() == "function_declarator"
+                && declarator
+                    .child_by_field_name("declarator")
+                    .is_none_or(|d| d.kind() != "parenthesized_declarator")
+            {
+                continue;
+            }
+            // An unnamed bitfield parses with an empty name; skip it.
+            if let Some((name, span)) =
+                declarator_name_node(declarator, self.src).filter(|(name, _)| !name.is_empty())
+            {
+                self.symbols.push(ExtractedSymbol {
+                    name,
+                    kind: SymbolKind::Field,
+                    span,
+                });
+            }
+        }
     }
 
     fn recurse(&mut self, node: Node, scope: &Scope) {
@@ -292,6 +321,36 @@ fn declarator_name(node: Node, src: &[u8]) -> Option<String> {
     }
 }
 
+/// Like `declarator_name`, but also returns the span of the name node.
+fn declarator_name_node(node: Node, src: &[u8]) -> Option<(String, Span)> {
+    let mut cur = node;
+    loop {
+        match cur.kind() {
+            "field_identifier" | "identifier" => {
+                return Some((cur.utf8_text(src).ok()?.to_string(), span_of(cur)));
+            }
+            "pointer_declarator"
+            | "array_declarator"
+            | "parenthesized_declarator"
+            | "function_declarator" => match cur.child_by_field_name("declarator") {
+                Some(n) => cur = n,
+                None => {
+                    // `(*cb)` has no declarator field; scan children.
+                    return (0..cur.child_count())
+                        .filter_map(|i| cur.child(i as u32))
+                        .find_map(|c| declarator_name_node(c, src));
+                }
+            },
+            "reference_declarator" => {
+                return (0..cur.child_count())
+                    .filter_map(|i| cur.child(i as u32))
+                    .find_map(|c| declarator_name_node(c, src));
+            }
+            _ => return None,
+        }
+    }
+}
+
 fn push_named(
     node: Node,
     field: &str,
@@ -323,7 +382,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Class, Enum, Function, Module, Struct};
+    use compass_core::SymbolKind::{Class, Enum, Field, Function, Module, Struct, Variant};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -416,7 +475,16 @@ int geo::Shape::area() {
         // The bodyless `Widget`/`Bare`/`Color` decoys are absent.
         let mut want = vec![
             ("Direction".to_string(), Enum),
+            ("EAST".to_string(), Variant),
+            ("NORTH".to_string(), Variant),
             ("Point".to_string(), Struct),
+            ("SOUTH".to_string(), Variant),
+            ("WEST".to_string(), Variant),
+            ("f".to_string(), Field),
+            ("i".to_string(), Field),
+            ("n".to_string(), Field),
+            ("x".to_string(), Field),
+            ("y".to_string(), Field),
             ("Shape".to_string(), Class),
             ("Value".to_string(), Struct),
             ("add".to_string(), Function),
@@ -510,5 +578,55 @@ void Service::prepare() {}
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn emits_fields_and_variants_with_lines() {
+        let src = "struct S {
+  int a, *b;
+  char c[4];
+  int& r;
+  static int s;
+  void m();
+  int (*cb)(int);
+  int :3;
+};
+enum class E { P, Q = 2 };
+enum F { Z };
+";
+        let ex = extract(src);
+        let got: Vec<(&str, SymbolKind, usize)> = ex
+            .symbols
+            .iter()
+            .filter(|s| matches!(s.kind, Field | Variant))
+            .map(|s| (s.name.as_str(), s.kind, s.span.start_row + 1))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a", Field, 2),
+                ("b", Field, 2),
+                ("c", Field, 3),
+                ("r", Field, 4),
+                ("s", Field, 5),
+                ("cb", Field, 7),
+                ("P", Variant, 10),
+                ("Q", Variant, 10),
+                ("Z", Variant, 11),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let src = "struct S {
+  int a;
+  void run() { helper(); }
+};
+";
+        let ex = extract(src);
+        assert_eq!(ex.calls.len(), 1);
+        assert_eq!(ex.symbols[ex.calls[0].caller].name, "run");
+        assert_eq!(ex.symbols[ex.calls[0].caller].kind, Function);
     }
 }

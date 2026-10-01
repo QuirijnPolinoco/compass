@@ -134,9 +134,21 @@ pub enum SymbolKind {
     Variable,
     Module,
     /// A named field of a record — a CSV column, a JSON key, a schema property (ADR-0007's
-    /// catalog tier). What a developer looks up to learn what a piece of data is *called*.
+    /// catalog tier), or a struct/class field or property in source code. What a developer looks
+    /// up to learn what a piece of data is *called*.
     Field,
+    /// A member of an enum (`Ordering::Less`, `Color.Red`).
+    Variant,
     Other,
+}
+
+impl SymbolKind {
+    /// Whether this names a part of a type (a field or an enum variant) rather than a definition
+    /// in its own right. Members are found by name like any symbol, but they are never a call
+    /// target, and in source files they are not drawn as nodes of their own in the map.
+    pub fn is_member(self) -> bool {
+        matches!(self, SymbolKind::Field | SymbolKind::Variant)
+    }
 }
 
 /// A source location (byte range + start row/col), enough to jump to a symbol.
@@ -1065,7 +1077,10 @@ impl MapQuery for Graph {
                 *sym_degree.entry(a).or_insert(0) += 1;
                 *sym_degree.entry(b).or_insert(0) += 1;
             }
-            for s in &self.symbols {
+            // A source file's fields and variants stay out of the drawing: they would multiply
+            // the nodes without adding edges. Data files keep theirs, as their only content.
+            let drawn = |s: &Symbol| !(s.kind.is_member() && self.is_code_like(s.file));
+            for s in self.symbols.iter().filter(|s| drawn(s)) {
                 let fidx = s.file.0 as usize;
                 nodes.push(GraphNode {
                     id: format!("sym:{}", s.id.0),
@@ -1089,6 +1104,9 @@ impl MapQuery for Graph {
                 });
             }
             for &(f, s) in &self.defines {
+                if !self.symbols.get(s.0 as usize).is_some_and(drawn) {
+                    continue;
+                }
                 if let Some(source) = path_of(f) {
                     edges.push(GraphEdge {
                         source,
@@ -1830,9 +1848,25 @@ impl Graph {
         let about_tests = terms.iter().any(|t| t.starts_with("test") || t == "spec");
         let about_markup = rank::about_markup(terms);
 
+        // A file with many symbols matches almost any word somewhere, so its symbol hits are
+        // damped by the log of its size relative to the average file. Logarithmic rather than
+        // BM25's linear scaling: a big file can still be the answer, it just stops winning on
+        // volume. Smaller-than-average files are not boosted, and matches on the file's own
+        // name and directory are not scaled.
+        let symbol_counts: Vec<usize> = self
+            .files
+            .iter()
+            .map(|f| sym_words.get(&f.id).map_or(0, Vec::len))
+            .collect();
+        let with_symbols = symbol_counts.iter().filter(|&&c| c > 0).count().max(1);
+        let avg_symbols =
+            (symbol_counts.iter().sum::<usize>() as f64 / with_symbols as f64).max(1.0);
+
         let deg = self.degrees();
         let mut scored: Vec<(f64, FileId)> = Vec::new();
         for (fi, f) in self.files.iter().enumerate() {
+            let size_norm =
+                1.0 + SYMBOL_LENGTH_NORM * (symbol_counts[fi] as f64 / avg_symbols).max(1.0).ln();
             let mut score = 0.0;
             let mut covered = 0usize;
             for (ti, w) in idf.iter().enumerate() {
@@ -1845,7 +1879,7 @@ impl Graph {
                 }
                 if symbol_hits > 0.0 {
                     let hits = symbol_hits.min(3.0);
-                    s += w * (hits.min(1.0) + 0.5 * (hits - 1.0).max(0.0));
+                    s += w * (hits.min(1.0) + 0.5 * (hits - 1.0).max(0.0)) / size_norm;
                 }
                 if s > 0.0 {
                     covered += 1;
@@ -1950,6 +1984,10 @@ impl Graph {
 
 /// How many symbols a context-pack file lists.
 const CONTEXT_SYMBOLS: usize = 8;
+
+/// How strongly a file's symbol hits are damped by its size: they are divided by
+/// `1 + SYMBOL_LENGTH_NORM * ln(symbols / average symbols)` for larger-than-average files.
+const SYMBOL_LENGTH_NORM: f64 = 0.75;
 
 /// A query-ranked file is kept only if it scores at least this fraction of the best file, so a
 /// precise prompt yields a few strong candidates instead of a padded list.
@@ -2109,6 +2147,45 @@ mod tests {
         assert_eq!(sym.group, group_of(&view, "src/auth/login.rs"));
         assert!(view.edges.iter().any(|e| e.kind == EdgeKind::Defines));
         assert!(view.edges.iter().any(|e| e.kind == EdgeKind::Calls));
+    }
+
+    #[test]
+    fn graph_view_draws_a_source_files_members_only_as_part_of_their_file() {
+        let mut g = bridged_graph();
+        let login = g.file_id(Path::new("src/auth/login.rs")).unwrap();
+        let rows = g.add_file_in(
+            PathBuf::from("data/users.csv"),
+            LanguageId::new("csv"),
+            FileCategory::new("data"),
+            0,
+        );
+        let span = Span {
+            start_byte: 0,
+            end_byte: 1,
+            start_row: 0,
+            start_col: 0,
+        };
+        g.add_symbol("Session".into(), SymbolKind::Struct, login, span);
+        g.add_symbol("token".into(), SymbolKind::Field, login, span);
+        g.add_symbol("Expired".into(), SymbolKind::Variant, login, span);
+        g.add_symbol("email".into(), SymbolKind::Field, rows, span);
+
+        let view = g.graph_view(true);
+        let drawn: Vec<&str> = view
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Symbol)
+            .map(|n| n.label.as_str())
+            .collect();
+        // A data file's columns are its whole content, so they stay; source members do not.
+        assert_eq!(drawn, ["Session", "email"]);
+        let node_ids: HashSet<&str> = view.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(view
+            .edges
+            .iter()
+            .all(|e| node_ids.contains(e.source.as_str()) && node_ids.contains(e.target.as_str())));
+        // Hidden from the drawing, still found by name.
+        assert_eq!(g.find_symbol("token").len(), 1);
     }
 
     #[test]

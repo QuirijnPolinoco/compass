@@ -114,6 +114,40 @@ fn resolves_same_file_unique_global_and_skips_ambiguous() {
 }
 
 #[test]
+fn a_field_never_takes_a_call_away_from_the_function_of_that_name() {
+    let dir = std::env::temp_dir().join("compass-calls-members");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // `config` is both a field (declared first, so first in the file) and a function. The
+    // same-file call must reach the function, and the field must not make the cross-file
+    // call from b.rs ambiguous either.
+    std::fs::write(
+        dir.join("a.rs"),
+        "struct App { config: u8 }\nfn config() {}\nfn start() { config(); }\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("b.rs"), "fn boot() { config(); }\n").unwrap();
+
+    let graph = index_rust(&dir);
+    assert_eq!(
+        readable_calls(&graph),
+        [
+            ("boot".to_string(), "a.rs::config".to_string()),
+            ("start".to_string(), "a.rs::config".to_string()),
+        ]
+    );
+    let config_fn = graph
+        .symbols()
+        .iter()
+        .find(|s| s.name == "config" && !s.kind.is_member())
+        .expect("the function is mapped");
+    assert!(graph.calls().iter().all(|&(_, to, _)| to == config_fn.id));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn same_file_call_is_resolved_and_unique_global_call_is_heuristic() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-confidence");
     let _ = std::fs::remove_dir_all(&dir);

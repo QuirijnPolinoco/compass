@@ -400,13 +400,17 @@ fn resolve_calls(
         .collect();
     let namespace_of = |p: &Parsed| namespaces.get(&p.language).map(String::as_str);
 
-    // (namespace, name) → symbol ids, across the whole repo.
+    // (namespace, name) to symbol ids, across the whole repo. Fields and variants are never
+    // called, and counting them would make a name like `config` ambiguous and drop real edges.
     let mut by_name: HashMap<(&str, &str), Vec<SymbolId>> = HashMap::new();
     for (pi, p) in parsed.iter().enumerate() {
         let Some(namespace) = namespace_of(p) else {
             continue;
         };
         for (si, s) in p.symbols.iter().enumerate() {
+            if s.kind.is_member() {
+                continue;
+            }
             by_name
                 .entry((namespace, s.name.as_str()))
                 .or_default()
@@ -423,7 +427,9 @@ fn resolve_calls(
         // Same-file name → symbol id (first definition wins).
         let mut local: HashMap<&str, SymbolId> = HashMap::new();
         for (si, s) in p.symbols.iter().enumerate() {
-            local.entry(s.name.as_str()).or_insert(ids[si]);
+            if !s.kind.is_member() {
+                local.entry(s.name.as_str()).or_insert(ids[si]);
+            }
         }
         for call in &p.calls {
             let Some(&caller) = ids.get(call.caller) else {

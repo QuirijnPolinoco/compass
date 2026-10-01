@@ -175,6 +175,9 @@ impl Visitor<'_> {
                         });
                     }
                 } else {
+                    if scope.in_class {
+                        self.push_attr_fields(node);
+                    }
                     let callee = callee_name(node, self.src);
                     self.push_call(node, callee, scope);
                 }
@@ -189,6 +192,41 @@ impl Visitor<'_> {
         while i < node.child_count() {
             if let Some(child) = node.child(i as u32) {
                 self.visit(child, scope);
+            }
+            i += 1;
+        }
+    }
+
+    /// `attr_accessor :a, :b` (also `attr_reader`, `attr_writer`) in a class or module body:
+    /// one Field per symbol argument. Fields are never a caller, so this only appends.
+    fn push_attr_fields(&mut self, call: Node) {
+        if call.child_by_field_name("receiver").is_some() {
+            return;
+        }
+        let method = call
+            .child_by_field_name("method")
+            .and_then(|m| m.utf8_text(self.src).ok());
+        if !matches!(
+            method,
+            Some("attr_accessor" | "attr_reader" | "attr_writer")
+        ) {
+            return;
+        }
+        let Some(args) = call.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut i = 0usize;
+        while i < args.child_count() {
+            if let Some(arg) = args.child(i as u32) {
+                if arg.kind() == "simple_symbol" {
+                    if let Ok(text) = arg.utf8_text(self.src) {
+                        self.symbols.push(ExtractedSymbol {
+                            name: text.trim_start_matches(':').to_string(),
+                            kind: SymbolKind::Field,
+                            span: span_of(arg),
+                        });
+                    }
+                }
             }
             i += 1;
         }
@@ -515,5 +553,32 @@ helper(0)
                 .map(|(a, b)| (a.to_string(), b.to_string()))
                 .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn attr_calls_in_a_class_body_become_fields() {
+        let src = "class User\n  attr_accessor :name, :email\n  attr_reader :id\n  private attr_writer :secret\n  attr_accessor 'skipped'\n  other :nope\n\n  def self.build\n    attr_reader :local\n  end\nend\n\nattr_accessor :top\nUser.attr_reader :recv\n";
+        let ex = extract(src);
+        let got: Vec<(String, SymbolKind, usize)> = ex
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Field)
+            .map(|s| (s.name.clone(), s.kind, s.span.start_row + 1))
+            .collect();
+        let want = [("name", 2), ("email", 2), ("id", 3), ("secret", 4)]
+            .iter()
+            .map(|(n, l)| (n.to_string(), SymbolKind::Field, *l))
+            .collect::<Vec<_>>();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn an_attr_field_never_captures_calls() {
+        let src = "class Svc\n  attr_accessor :name\n\n  def run\n    helper(1)\n  end\nend\n";
+        let ex = extract(src);
+        assert_eq!(ex.calls.len(), 1);
+        let call = &ex.calls[0];
+        assert_eq!(ex.symbols[call.caller].name, "run");
+        assert_eq!(call.callee, "helper");
     }
 }
