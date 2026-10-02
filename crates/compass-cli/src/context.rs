@@ -300,6 +300,9 @@ fn render_context_markdown(path: &Path, pack: &ContextPack) -> String {
     for f in &pack.files {
         let lang = f.language.as_deref().unwrap_or("?");
         let mut line = format!("- {} [{lang}]", f.path);
+        if let Some(summary) = &f.summary {
+            let _ = write!(line, " {}", clip(summary, SUMMARY_CHARS));
+        }
         if !f.symbols.is_empty() {
             let shown = f
                 .symbols
@@ -325,6 +328,20 @@ fn render_context_markdown(path: &Path, pack: &ContextPack) -> String {
         let _ = writeln!(out, "{line}");
     }
     out
+}
+
+/// How much of a file's summary a context line shows: enough to tell candidate files apart,
+/// little enough that it never costs more than the paths it saves the agent from opening.
+const SUMMARY_CHARS: usize = 80;
+
+/// `text` cut to at most `max` characters at a word boundary, marked with `...` when cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max).collect();
+    let head = head.rsplit_once(' ').map_or(head.as_str(), |(h, _)| h);
+    format!("{}...", head.trim_end_matches([',', ';', ':']))
 }
 
 /// How many imports / importers a context line names before summarising the rest. Every path
@@ -367,12 +384,32 @@ mod tests {
         ContextFile {
             path: "src/util.rs".to_string(),
             language: Some("rust".to_string()),
+            summary: None,
             symbols: Vec::new(),
             symbol_count: 0,
             depends_on: Vec::new(),
             dependents: dependents.iter().map(ToString::to_string).collect(),
             affected_count,
         }
+    }
+
+    #[test]
+    fn a_file_summary_is_shown_and_clipped_at_a_word() {
+        let mut f = file(&[], 0);
+        f.summary = Some("Pre-trade risk checks.".to_string());
+        let out = render_context_markdown(Path::new("."), &pack_with(f.clone()));
+        assert!(
+            out.contains("- src/util.rs [rust] Pre-trade risk checks."),
+            "{out}"
+        );
+
+        f.summary = Some(format!(
+            "Pre-trade risk checks, {}",
+            "and more detail ".repeat(10)
+        ));
+        let out = render_context_markdown(Path::new("."), &pack_with(f));
+        let line = out.lines().find(|l| l.starts_with("- ")).unwrap();
+        assert!(line.ends_with("...") && line.len() < 120, "{line}");
     }
 
     #[test]

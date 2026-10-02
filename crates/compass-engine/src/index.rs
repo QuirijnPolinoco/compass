@@ -15,6 +15,7 @@ use compass_extract::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::docs::FileDocs;
 use crate::walk::{self, Walked};
 
 /// One file after phase-1 parse + extract. Carries its change fingerprint (`mtime_ns`/`size`)
@@ -28,6 +29,8 @@ struct Parsed {
     calls: Vec<RawCall>,
     /// Why the contents were skipped, if they were (see [`skip_reason`]).
     not_analysed: Option<String>,
+    /// Doc summaries: the file's own, and one per entry of `symbols`.
+    docs: FileDocs,
     mtime_ns: u64,
     size: u64,
 }
@@ -47,6 +50,12 @@ pub struct CachedFile {
     /// Why the contents were skipped, if they were. Absent in older caches → analysed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_analysed: Option<String>,
+    /// The file's doc summary ([`crate::docs`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// One doc summary per entry of `symbols`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub docs: Vec<Option<String>>,
 }
 
 /// Repo-relative path → its last phase-1 extraction. Persisted by the `cache` module and fed
@@ -105,9 +114,16 @@ pub fn index_incremental(
         if let Some(reason) = &p.not_analysed {
             graph.mark_not_analysed(fid, reason.clone());
         }
+        if let Some(summary) = &p.docs.summary {
+            graph.set_file_summary(fid, summary.clone());
+        }
         let mut ids = Vec::with_capacity(p.symbols.len());
-        for s in &p.symbols {
-            ids.push(graph.add_symbol(s.name.clone(), s.kind, fid, s.span));
+        for (i, s) in p.symbols.iter().enumerate() {
+            let id = graph.add_symbol(s.name.clone(), s.kind, fid, s.span);
+            if let Some(Some(doc)) = p.docs.symbols.get(i) {
+                graph.set_symbol_doc(id, doc.clone());
+            }
+            ids.push(id);
         }
         symbol_ids.push(ids);
     }
@@ -187,6 +203,8 @@ pub fn index_incremental(
                 imports: p.imports,
                 calls: p.calls,
                 not_analysed: p.not_analysed,
+                summary: p.docs.summary,
+                docs: p.docs.symbols,
             },
         );
     }
@@ -224,6 +242,10 @@ fn reuse_or_parse(
                     imports: cf.imports.clone(),
                     calls: cf.calls.clone(),
                     not_analysed: cf.not_analysed.clone(),
+                    docs: FileDocs {
+                        summary: cf.summary.clone(),
+                        symbols: cf.docs.clone(),
+                    },
                     mtime_ns: w.mtime_ns,
                     size: w.size,
                 });
@@ -343,6 +365,7 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         imports: Vec::new(),
         calls: Vec::new(),
         not_analysed: Some(reason),
+        docs: FileDocs::default(),
         mtime_ns: w.mtime_ns,
         size: w.size,
     };
@@ -353,10 +376,14 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         return Some(skipped(reason, fingerprint));
     }
 
-    let (extraction, hash) = match parsing {
+    let (extraction, docs, hash) = match parsing {
         Parsing::Head { max_bytes } => {
             let head = read_head(&w.abs, max_bytes)?;
-            (extractor.extract_head(&head), fingerprint)
+            (
+                extractor.extract_head(&head),
+                FileDocs::default(),
+                fingerprint,
+            )
         }
         Parsing::Grammar(grammar) => {
             let bytes = std::fs::read(&w.abs).ok()?;
@@ -364,7 +391,9 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
                 return Some(skipped("minified".to_string(), content_hash(&bytes)));
             }
             let tree = compass_extract::parse(&grammar, &bytes)?;
-            (extractor.extract(&bytes, &tree), content_hash(&bytes))
+            let extraction = extractor.extract(&bytes, &tree);
+            let docs = crate::docs::file_docs(&bytes, &tree, &extraction.symbols);
+            (extraction, docs, content_hash(&bytes))
         }
     };
     Some(Parsed {
@@ -375,6 +404,7 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         imports: extraction.imports,
         calls: extraction.calls,
         not_analysed: None,
+        docs,
         mtime_ns: w.mtime_ns,
         size: w.size,
     })

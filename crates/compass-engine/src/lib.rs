@@ -5,6 +5,7 @@
 //! (live freshness, FR-13) modules. The `config` (`.compass.toml`) module arrives post-v1.
 
 pub mod cache;
+pub mod docs;
 pub mod index;
 pub mod walk;
 pub mod watch;

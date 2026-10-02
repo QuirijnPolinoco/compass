@@ -120,6 +120,9 @@ pub struct File {
     pub not_analysed: Option<String>,
     /// Hash of the file contents — drives incremental staleness detection.
     pub content_hash: u64,
+    /// What the file is for, from its leading doc comment or module docstring (first sentence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -168,6 +171,9 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub file: FileId,
     pub span: Span,
+    /// The first sentence of the symbol's doc comment or docstring, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,8 +251,23 @@ impl Graph {
             category,
             not_analysed: None,
             content_hash,
+            summary: None,
         });
         id
+    }
+
+    /// Record what a file is for (its leading doc comment, summarized by the indexer).
+    pub fn set_file_summary(&mut self, file: FileId, summary: String) {
+        if let Some(f) = self.files.get_mut(file.0 as usize) {
+            f.summary = Some(summary);
+        }
+    }
+
+    /// Record a symbol's doc summary.
+    pub fn set_symbol_doc(&mut self, symbol: SymbolId, doc: String) {
+        if let Some(s) = self.symbols.get_mut(symbol.0 as usize) {
+            s.doc = Some(doc);
+        }
     }
 
     /// Record that `file`'s contents were skipped, and why (see [`File::not_analysed`]).
@@ -270,6 +291,7 @@ impl Graph {
             kind,
             file,
             span,
+            doc: None,
         });
         self.defines.push((file, id));
         id
@@ -846,6 +868,9 @@ pub struct ContextSymbol {
 pub struct ContextFile {
     pub path: String,
     pub language: Option<String>,
+    /// What the file is for, from its leading doc comment, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// Defined symbols (capped). For a query, the symbols that match it come first and are the
     /// only ones listed when there are any.
     pub symbols: Vec<ContextSymbol>,
@@ -1807,26 +1832,38 @@ impl Graph {
         if terms.is_empty() {
             return Vec::new();
         }
-        // Per file: each symbol's words and how much a match on it counts.
+        // Per file: each symbol's words and how much a match on it counts. A doc comment is
+        // evidence too, at a lower weight than the name: prose mentions more than it defines.
         let mut sym_words: HashMap<FileId, Vec<(Vec<String>, f64)>> = HashMap::new();
+        let mut symbol_count: HashMap<FileId, usize> = HashMap::new();
         for s in &self.symbols {
             let words = rank::identifier_words(&s.name);
             let weight = rank::symbol_weight(&words);
-            sym_words.entry(s.file).or_default().push((words, weight));
+            let entry = sym_words.entry(s.file).or_default();
+            entry.push((words, weight));
+            if let Some(doc) = &s.doc {
+                entry.push((rank::query_terms(doc), weight * DOC_WEIGHT));
+            }
+            *symbol_count.entry(s.file).or_default() += 1;
         }
 
-        // Per file: (name words, directory words) of its path.
+        // Per file: its name's words, and its directory's words plus its summary's, which say
+        // what the file is about at the same strength.
         let docs: Vec<(Vec<String>, Vec<String>)> = self
             .files
             .iter()
             .map(|f| {
                 let path = f.path.to_string_lossy();
                 let (dir, name) = path.rsplit_once('/').unwrap_or(("", &path));
-                (rank::identifier_words(name), rank::identifier_words(dir))
+                let mut about = rank::identifier_words(dir);
+                if let Some(summary) = &f.summary {
+                    about.extend(rank::query_terms(summary));
+                }
+                (rank::identifier_words(name), about)
             })
             .collect();
 
-        // Per term, per file: (in name, in dir, weighted count of matching symbols).
+        // Per term, per file: (in name, in dir or summary, weighted count of matching symbols).
         let hits: Vec<Vec<(bool, bool, f64)>> = terms
             .iter()
             .map(|t| {
@@ -1872,7 +1909,7 @@ impl Graph {
         let symbol_counts: Vec<usize> = self
             .files
             .iter()
-            .map(|f| sym_words.get(&f.id).map_or(0, Vec::len))
+            .map(|f| symbol_count.get(&f.id).copied().unwrap_or(0))
             .collect();
         let with_symbols = symbol_counts.iter().filter(|&&c| c > 0).count().max(1);
         let avg_symbols =
@@ -1943,10 +1980,9 @@ impl Graph {
             .file_path(id)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let language = self
-            .files
-            .get(id.0 as usize)
-            .map(|f| f.language.as_str().to_string());
+        let file = self.files.get(id.0 as usize);
+        let language = file.map(|f| f.language.as_str().to_string());
+        let summary = file.and_then(|f| f.summary.clone());
         let defined: Vec<&Symbol> = self.symbols.iter().filter(|s| s.file == id).collect();
         let symbol_count = defined.len();
         let shown = |s: &Symbol| ContextSymbol {
@@ -1989,6 +2025,7 @@ impl Graph {
         ContextFile {
             path,
             language,
+            summary,
             symbols,
             symbol_count,
             depends_on,
@@ -2000,6 +2037,9 @@ impl Graph {
 
 /// How many symbols a context-pack file lists.
 const CONTEXT_SYMBOLS: usize = 8;
+
+/// How much a match in a symbol's doc comment counts, relative to one in its name.
+const DOC_WEIGHT: f64 = 0.5;
 
 /// How strongly a file's symbol hits are damped by its size: they are divided by
 /// `1 + SYMBOL_LENGTH_NORM * ln(symbols / average symbols)` for larger-than-average files.
