@@ -110,9 +110,12 @@ fn print_help() {
     println!("  compass map [PATH]         Open an interactive, live visual map in the browser");
     println!("                             (--port N, --no-open, --snapshot for a static .html)");
     println!(
-        "  compass context [PATH]     Print a relevant map slice to pre-inject into an AI prompt"
+        "  compass context [PATH] [TASK]  Print a relevant map slice to pre-inject into an AI prompt"
     );
-    println!("                             (--query \"task\" | --file PATH... | --hook; --max N, --fresh)");
+    println!(
+        "                             (text that is not a path is the task; also --query \"task\""
+    );
+    println!("                             | --file PATH... | --hook; --max N, --fresh)");
     println!("  compass languages          List supported languages");
     println!("  compass serve [PATH]       Run the MCP server over stdio (for AI hosts)");
     println!(

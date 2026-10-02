@@ -292,6 +292,59 @@ fn overview_of_go_fixture() {
     assert!(stdout.contains("go"), "stdout:\n{stdout}");
 }
 
+/// A positional that is not an existing path is the query, so `compass context <dir> Greeting`
+/// ranks by `Greeting` instead of trying to map a directory called "Greeting" and printing
+/// nothing.
+#[test]
+fn context_text_that_is_not_a_path_is_the_query() {
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("context")
+        .arg(fixture())
+        .arg("Greeting")
+        .output()
+        .expect("run compass context");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stderr:
+{stderr}"
+    );
+    assert!(
+        stdout.contains("selected by query"),
+        "stdout:
+{stdout}"
+    );
+}
+
+/// An explicit `--query` wins over loose text, and the loose text is reported, not dropped.
+#[test]
+fn context_explicit_query_wins_and_extra_text_is_reported() {
+    let output = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .arg("context")
+        .arg(fixture())
+        .args(["--query", "Greeting", "stray words"])
+        .output()
+        .expect("run compass context");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stderr:
+{stderr}"
+    );
+    assert!(
+        stdout.contains("selected by query"),
+        "stdout:
+{stdout}"
+    );
+    assert!(
+        stderr.contains("ignoring extra arguments: stray words"),
+        "stderr:
+{stderr}"
+    );
+}
+
 #[test]
 fn overview_of_c_fixture() {
     let output = Command::new(env!("CARGO_BIN_EXE_compass"))
