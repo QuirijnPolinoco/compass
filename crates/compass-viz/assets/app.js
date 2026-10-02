@@ -555,22 +555,163 @@
   }
 
   // ---- search ---------------------------------------------------------------------------
+  // Two searches share the box. Name matching runs on every keystroke, as before. In live mode
+  // the text is also sent to the same ranker `compass context` uses for an AI, so a described
+  // task ("where is the kill switch handled") lists the files it points at, with the matching
+  // symbols' lines. A snapshot has no server, so it keeps name matching only.
   var searchEl = $("search");
-  function applySearch() {
-    var q = searchEl.value.trim().toLowerCase();
+  var panel = $("search-panel"), listEl = $("search-results");
+  var stateEl = $("search-state"), countEl = $("search-count");
+  var canRank = !snapshot;
+  var ranked = [], active = -1, rankSeq = 0, rankTimer = null, slowTimer = null;
+  var MIN_RANK_CHARS = 3, RANK_DELAY_MS = 180, SLOW_MS = 150;
+  if (canRank) {
+    searchEl.placeholder = "Find a file or a task…";
+    searchEl.setAttribute("aria-label", "Find a file, or describe a task");
+  }
+
+  function highlight(nodes) {
     cy.batch(function () {
       cy.elements().removeClass("dim match");
-      if (!q) return;
-      var matched = cy.nodes().filter(function (n) {
-        return (n.data("path") || "").toLowerCase().indexOf(q) !== -1 ||
-          (n.data("label") || "").toLowerCase().indexOf(q) !== -1;
-      });
-      if (matched.length === 0) return;
-      cy.elements().not(matched.closedNeighborhood()).addClass("dim");
-      matched.addClass("match");
+      if (nodes.length === 0) return;
+      cy.elements().not(nodes.closedNeighborhood()).addClass("dim");
+      nodes.addClass("match");
     });
   }
-  searchEl.addEventListener("input", applySearch);
+
+  // Name matches, or (when nothing is named like that) the ranked files.
+  function applySearch() {
+    var q = searchEl.value.trim().toLowerCase();
+    if (!q) { highlight(cy.collection()); return; }
+    var matched = cy.nodes().filter(function (n) {
+      return (n.data("path") || "").toLowerCase().indexOf(q) !== -1 ||
+        (n.data("label") || "").toLowerCase().indexOf(q) !== -1;
+    });
+    if (matched.length === 0 && ranked.length) {
+      matched = cy.collection();
+      ranked.forEach(function (f) { matched = matched.union(cy.getElementById(f.path)); });
+    }
+    highlight(matched);
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    searchEl.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open) searchEl.removeAttribute("aria-activedescendant");
+  }
+
+  function setState(text) { stateEl.textContent = text; stateEl.hidden = !text; }
+
+  function splitPath(path) {
+    var i = path.lastIndexOf("/");
+    return i < 0 ? { dir: "", name: path } : { dir: path.slice(0, i + 1), name: path.slice(i + 1) };
+  }
+
+  function renderRanked() {
+    listEl.innerHTML = ranked.map(function (f, i) {
+      var p = splitPath(f.path);
+      var node = cy.getElementById(f.path);
+      var hidden = node.empty() || node.hasClass("cat-hidden");
+      var symbols = (f.symbols || []).slice(0, 4).map(function (s) {
+        return "<code>" + esc(s.name) + ":" + s.line + "</code>";
+      }).join("");
+      return '<li role="option" id="sr-' + i + '" class="sr-item" aria-selected="false">' +
+        '<div class="sr-path"><span class="sr-dir">' + esc(p.dir) + '</span>' +
+        '<span class="sr-name">' + esc(p.name) + '</span>' +
+        (hidden ? '<span class="sr-note">hidden in map</span>' : "") + '</div>' +
+        (f.summary ? '<div class="sr-summary">' + esc(f.summary) + "</div>" : "") +
+        (symbols ? '<div class="sr-symbols">' + symbols + "</div>" : "") +
+        "</li>";
+    }).join("");
+    active = -1;
+    countEl.textContent = ranked.length ? ranked.length + (ranked.length === 1 ? " file" : " files") : "";
+  }
+
+  function setActive(i) {
+    var items = listEl.children;
+    if (!items.length) return;
+    active = (i + items.length) % items.length;
+    for (var k = 0; k < items.length; k++) items[k].setAttribute("aria-selected", k === active ? "true" : "false");
+    searchEl.setAttribute("aria-activedescendant", "sr-" + active);
+    items[active].scrollIntoView({ block: "nearest" });
+  }
+
+  function choose(i) {
+    var f = ranked[i];
+    if (!f) return;
+    var node = cy.getElementById(f.path);
+    if (node.empty() || node.hasClass("cat-hidden")) {
+      setState(f.path + " is hidden in the map: turn its file type back on in the legend.");
+      return;
+    }
+    setOpen(false);
+    highlight(node);
+    node.addClass("show-label");
+    cy.animate({
+      center: { eles: node },
+      zoom: Math.max(cy.zoom(), 1.2),
+      duration: reduceMotion ? 0 : 300,
+    });
+  }
+
+  function rank() {
+    var q = searchEl.value.trim();
+    clearTimeout(rankTimer);
+    clearTimeout(slowTimer);
+    if (!canRank || q.length < MIN_RANK_CHARS) {
+      ranked = [];
+      setOpen(false);
+      return;
+    }
+    rankTimer = setTimeout(function () {
+      var seq = ++rankSeq;
+      // Say "searching" only if it is slow enough to notice; a fast answer just appears.
+      slowTimer = setTimeout(function () {
+        if (seq === rankSeq) { setOpen(true); setState("Searching…"); }
+      }, SLOW_MS);
+      fetch("/search?q=" + encodeURIComponent(q))
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (files) {
+          if (seq !== rankSeq) return;               // a newer query is on its way
+          clearTimeout(slowTimer);
+          ranked = files;
+          renderRanked();
+          setState(files.length ? "" : "No file matches that. Try a function, file or domain word.");
+          setOpen(document.activeElement === searchEl);
+          applySearch();
+        })
+        .catch(function () {
+          if (seq !== rankSeq) return;
+          clearTimeout(slowTimer);
+          ranked = [];
+          renderRanked();
+          setState("Ranked search is unavailable right now; matching file names instead.");
+          setOpen(document.activeElement === searchEl);
+        });
+    }, RANK_DELAY_MS);
+  }
+
+  searchEl.addEventListener("input", function () { applySearch(); rank(); });
+  searchEl.addEventListener("keydown", function (e) {
+    if (panel.hidden) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive(active + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(active - 1); }
+    else if (e.key === "Enter" && ranked.length) { e.preventDefault(); choose(active < 0 ? 0 : active); }
+    else if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
+  });
+  // Close when focus leaves the box (deferred, and cancelled if it comes straight back); a
+  // click on a result keeps focus (mousedown below).
+  var closeTimer = null;
+  searchEl.addEventListener("focus", function () {
+    clearTimeout(closeTimer);
+    if (canRank && searchEl.value.trim().length >= MIN_RANK_CHARS && (ranked.length || stateEl.textContent)) setOpen(true);
+  });
+  searchEl.addEventListener("blur", function () { closeTimer = setTimeout(function () { setOpen(false); }, 0); });
+  listEl.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    var item = e.target.closest(".sr-item");
+    if (item) choose(Array.prototype.indexOf.call(listEl.children, item));
+  });
 
   // ---- controls -------------------------------------------------------------------------
   $("color-mode").addEventListener("change", function (e) { colorMode = e.target.value; applyColors(); });

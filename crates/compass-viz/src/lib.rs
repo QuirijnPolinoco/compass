@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use compass_core::{GraphView, MapQuery, Subgraph};
+use compass_core::{ContextPack, ContextRequest, GraphView, MapQuery, Subgraph};
 
 pub use server::{bind, VizServer};
 pub use session_tokens::{aggregate_session_tokens, SessionTokenSummary, SessionTokens};
@@ -85,6 +85,21 @@ impl MapState {
         self.inner.lock().unwrap().query.subgraph(file, depth)
     }
 
+    /// The files a free-text task points at, ranked the way `compass context` ranks them for an
+    /// AI. Empty when the text matched nothing (never the most-connected fallback: for a search
+    /// box that would look like results that are not).
+    pub(crate) fn search(&self, text: &str, max_files: usize) -> ContextPack {
+        let mut pack = self.inner.lock().unwrap().query.context(&ContextRequest {
+            query: Some(text.to_string()),
+            seeds: Vec::new(),
+            max_files,
+        });
+        if pack.selected_by != "query" {
+            pack.files.clear();
+        }
+        pack
+    }
+
     /// Block until the version differs from `last`, or `timeout` elapses (for keep-alives).
     /// Returns the current version.
     pub(crate) fn wait_for_change(&self, last: u64, timeout: Duration) -> u64 {
@@ -102,4 +117,39 @@ impl MapState {
 /// inlined so the in-page toggle still works.
 pub fn snapshot_html(query: &Query) -> String {
     render::snapshot_html(&query.graph_view(false), &query.graph_view(true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compass_core::{Graph, LanguageId, Span, SymbolKind};
+
+    fn state() -> Arc<MapState> {
+        let mut g = Graph::new();
+        let rs = LanguageId::new("rust");
+        let gate = g.add_file("src/risk/gate.rs".into(), rs.clone(), 0);
+        g.add_file("src/ui/page.rs".into(), rs, 0);
+        let span = Span {
+            start_byte: 0,
+            end_byte: 0,
+            start_row: 41,
+            start_col: 0,
+        };
+        g.add_symbol("drawdown_cap".into(), SymbolKind::Function, gate, span);
+        MapState::new(Arc::new(g), PathBuf::from("."))
+    }
+
+    #[test]
+    fn search_ranks_files_for_a_task_with_symbol_lines() {
+        let pack = state().search("where is the drawdown cap", 8);
+        assert_eq!(pack.files.len(), 1);
+        assert_eq!(pack.files[0].path, "src/risk/gate.rs");
+        assert_eq!(pack.files[0].symbols[0].line, 42);
+    }
+
+    #[test]
+    fn search_never_pads_a_miss_with_unrelated_files() {
+        assert!(state().search("kubernetes helm chart", 8).files.is_empty());
+        assert!(state().search("", 8).files.is_empty());
+    }
 }
