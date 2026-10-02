@@ -1819,12 +1819,13 @@ impl Graph {
         let n = self.files.len() as f64;
         let idf: Vec<f64> = hits
             .iter()
-            .map(|per_file| {
+            .zip(terms)
+            .map(|(per_file, term)| {
                 let df = per_file
                     .iter()
                     .filter(|(name, dir, syms)| *name || *dir || *syms > 0.0)
                     .count();
-                (1.0 + n / (df.max(1) as f64)).ln()
+                (1.0 + n / (df.max(1) as f64)).ln() * rank::term_weight(term)
             })
             .collect();
         let about_tests = terms.iter().any(|t| t.starts_with("test") || t == "spec");
