@@ -123,6 +123,10 @@ pub struct File {
     /// What the file is for, from its leading doc comment or module docstring (first sentence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Short string literals and configuration keys: values a task may ask to change that live
+    /// in no identifier. Weak ranking evidence only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub literals: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -236,6 +240,7 @@ impl Graph {
             not_analysed: None,
             content_hash,
             summary: None,
+            literals: Vec::new(),
         });
         id
     }
@@ -244,6 +249,13 @@ impl Graph {
     pub fn set_file_summary(&mut self, file: FileId, summary: String) {
         if let Some(f) = self.files.get_mut(file.0 as usize) {
             f.summary = Some(summary);
+        }
+    }
+
+    /// Record a file's short string literals and configuration keys.
+    pub fn set_file_literals(&mut self, file: FileId, literals: Vec<String>) {
+        if let Some(f) = self.files.get_mut(file.0 as usize) {
+            f.literals = literals;
         }
     }
 
@@ -1871,13 +1883,36 @@ impl Graph {
             })
             .collect();
 
+        // Per term, per file: whether a short string literal or configuration key matches.
+        let literal_words: Vec<Vec<String>> = self
+            .files
+            .iter()
+            .map(|f| {
+                f.literals
+                    .iter()
+                    .flat_map(|l| rank::identifier_words(l))
+                    .collect()
+            })
+            .collect();
+        let literal_hits: Vec<Vec<bool>> = terms
+            .iter()
+            .map(|t| {
+                literal_words
+                    .iter()
+                    .map(|w| rank::any_match(t, w))
+                    .collect()
+            })
+            .collect();
+
         let n = self.files.len() as f64;
         let idf: Vec<f64> = hits
             .iter()
-            .map(|per_file| {
+            .zip(&literal_hits)
+            .map(|(per_file, literal)| {
                 let df = per_file
                     .iter()
-                    .filter(|(name, dir, syms)| *name || *dir || *syms > 0.0)
+                    .zip(literal)
+                    .filter(|((name, dir, syms), lit)| *name || *dir || *syms > 0.0 || **lit)
                     .count();
                 (1.0 + n / (df.max(1) as f64)).ln()
             })
@@ -1917,6 +1952,9 @@ impl Graph {
                 if symbol_hits > 0.0 {
                     let hits = symbol_hits.min(3.0);
                     s += w * (hits.min(1.0) + 0.5 * (hits - 1.0).max(0.0)) / size_norm;
+                }
+                if literal_hits[ti][fi] {
+                    s += LITERAL_WEIGHT * w;
                 }
                 if s > 0.0 {
                     covered += 1;
@@ -2021,6 +2059,10 @@ impl Graph {
 
 /// How many symbols a context-pack file lists.
 const CONTEXT_SYMBOLS: usize = 8;
+
+/// How much a match in a file's string literals or configuration keys counts, relative to one
+/// in a symbol name: weaker than a doc comment, because a literal names a value, not a purpose.
+const LITERAL_WEIGHT: f64 = 0.4;
 
 /// How much a match in a symbol's doc comment counts, relative to one in its name.
 const DOC_WEIGHT: f64 = 0.5;
@@ -2383,6 +2425,24 @@ mod tests {
         assert_eq!(
             ranked(&g, "raise the risk drawdown cap")[0],
             "src/risk/caps.rs"
+        );
+    }
+
+    #[test]
+    fn context_by_query_uses_string_literals_as_weak_evidence() {
+        let mut g = ranking_graph(&[
+            ("src/commands/PollCommand.ts", &["PollCommand", "execute"]),
+            (
+                "src/repositories/PollRepository.ts",
+                &["PollRepository", "create"],
+            ),
+        ]);
+        let command = g.file_id(Path::new("src/commands/PollCommand.ts")).unwrap();
+        g.set_file_literals(command, vec!["Yes".into(), "No".into(), "Maybe".into()]);
+        // Both files are about polls; only one holds the value the task names.
+        assert_eq!(
+            ranked(&g, "drop Maybe from the default poll answers")[0],
+            "src/commands/PollCommand.ts"
         );
     }
 

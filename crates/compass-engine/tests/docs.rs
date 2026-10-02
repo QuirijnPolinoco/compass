@@ -171,3 +171,40 @@ fn a_go_package_comment_describes_the_file_and_a_license_does_not() {
     );
     assert_eq!(summary(&g, "util.go"), None);
 }
+
+fn literals(graph: &Graph, path: &str) -> Vec<String> {
+    graph
+        .files()
+        .iter()
+        .find(|f| f.path == Path::new(path))
+        .unwrap_or_else(|| panic!("{path} not mapped"))
+        .literals
+        .clone()
+}
+
+#[test]
+fn short_literals_and_configuration_keys_are_kept_long_ones_and_comments_are_not() {
+    let g = index(
+        &[
+            (
+                "poll.ts",
+                "// 'commented out'\n\
+                 const defaultVoteOptions = ['Yes', 'No', 'Maybe'];\n\
+                 export const qualityContent = { minEmojiCount: 5, 'quoted key': 1 };\n\
+                 const long = 'this sentence is far too long to be a value anyone looks up by name at all';\n\
+                 const multi = `a\nb`;\n",
+            ),
+            (
+                "conf.go",
+                "package conf\n\
+                 var Defaults = Config{RetryInterval: 5, Name: \"relay\"}\n",
+            ),
+        ],
+        "literals",
+    );
+    assert_eq!(
+        literals(&g, "poll.ts"),
+        ["Yes", "No", "Maybe", "minEmojiCount", "quoted key"]
+    );
+    assert_eq!(literals(&g, "conf.go"), ["RetryInterval", "Name", "relay"]);
+}

@@ -31,6 +31,8 @@ struct Parsed {
     not_analysed: Option<String>,
     /// Doc summaries: the file's own, and one per entry of `symbols`.
     docs: FileDocs,
+    /// Short string literals and configuration keys ([`crate::literals`]).
+    literals: Vec<String>,
     mtime_ns: u64,
     size: u64,
 }
@@ -56,6 +58,9 @@ pub struct CachedFile {
     /// One doc summary per entry of `symbols`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<Option<String>>,
+    /// Short string literals and configuration keys ([`crate::literals`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub literals: Vec<String>,
 }
 
 /// Repo-relative path → its last phase-1 extraction. Persisted by the `cache` module and fed
@@ -115,6 +120,9 @@ pub fn index_incremental(
         }
         if let Some(summary) = &p.docs.summary {
             graph.set_file_summary(fid, summary.clone());
+        }
+        if !p.literals.is_empty() {
+            graph.set_file_literals(fid, p.literals.clone());
         }
         let mut ids = Vec::with_capacity(p.symbols.len());
         for (i, s) in p.symbols.iter().enumerate() {
@@ -204,6 +212,7 @@ pub fn index_incremental(
                 not_analysed: p.not_analysed,
                 summary: p.docs.summary,
                 docs: p.docs.symbols,
+                literals: p.literals,
             },
         );
     }
@@ -245,6 +254,7 @@ fn reuse_or_parse(
                         summary: cf.summary.clone(),
                         symbols: cf.docs.clone(),
                     },
+                    literals: cf.literals.clone(),
                     mtime_ns: w.mtime_ns,
                     size: w.size,
                 });
@@ -365,6 +375,7 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         calls: Vec::new(),
         not_analysed: Some(reason),
         docs: FileDocs::default(),
+        literals: Vec::new(),
         mtime_ns: w.mtime_ns,
         size: w.size,
     };
@@ -375,12 +386,13 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         return Some(skipped(reason, fingerprint));
     }
 
-    let (extraction, docs, hash) = match parsing {
+    let (extraction, docs, literals, hash) = match parsing {
         Parsing::Head { max_bytes } => {
             let head = read_head(&w.abs, max_bytes)?;
             (
                 extractor.extract_head(&head),
                 FileDocs::default(),
+                Vec::new(),
                 fingerprint,
             )
         }
@@ -392,7 +404,8 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
             let tree = compass_extract::parse(&grammar, &bytes)?;
             let extraction = extractor.extract(&bytes, &tree);
             let docs = crate::docs::file_docs(&bytes, &tree, &extraction.symbols);
-            (extraction, docs, content_hash(&bytes))
+            let literals = crate::literals::file_literals(&bytes, &tree);
+            (extraction, docs, literals, content_hash(&bytes))
         }
     };
     Some(Parsed {
@@ -404,6 +417,7 @@ fn parse_one(w: &Walked, registry: &Registry) -> Option<Parsed> {
         calls: extraction.calls,
         not_analysed: None,
         docs,
+        literals,
         mtime_ns: w.mtime_ns,
         size: w.size,
     })
