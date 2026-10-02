@@ -83,15 +83,20 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
         }
     }
 
-    // Prefer the cached graph so per-prompt injection is fast (a full re-index every prompt
-    // would tax a large repo). `--fresh` forces re-indexing; `compass init`/`watch` keep the
-    // cache current. In hook mode a failure must never block the user's prompt — exit 0 silent.
+    // Use the cached graph while it still matches the tree (a metadata-only walk), otherwise
+    // reindex incrementally and refresh the cache, so an edit made since the last prompt is
+    // always reflected. `--fresh` skips the cache entirely. In hook mode a failure must never
+    // block the user's prompt: exit 0 silently.
     let graph = if fresh {
         None
     } else {
-        compass_engine::cache::load(&path)
+        compass_engine::cache::load_current(&path)
     }
-    .or_else(|| build_graph(&path));
+    .or_else(|| {
+        let graph = build_graph(&path)?;
+        let _ = compass_engine::cache::save(&path, &graph);
+        Some(graph)
+    });
     let Some(graph) = graph else {
         return if hook {
             ExitCode::SUCCESS

@@ -129,6 +129,43 @@ fn a_cached_extraction_for_an_unregistered_language_is_not_reused() {
 }
 
 #[test]
+fn a_cached_graph_is_current_only_until_the_tree_changes() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-current");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+
+    let save = || {
+        let (graph, _) = compass_engine::index_incremental(&dir, &registry(), None).unwrap();
+        compass_engine::cache::save(&dir, &graph).unwrap();
+    };
+    save();
+    // Writing the cache itself must not make it stale.
+    assert!(compass_engine::cache::load_current(&dir).is_some());
+
+    // An edited file (a different size, so the fingerprint differs whatever the clock does).
+    std::fs::write(dir.join("a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    assert!(compass_engine::cache::load_current(&dir).is_none());
+    assert!(
+        compass_engine::cache::load(&dir).is_some(),
+        "plain load ignores the tree"
+    );
+
+    save();
+    assert!(compass_engine::cache::load_current(&dir).is_some());
+
+    // A new file, even one no extractor maps, is a change too.
+    std::fs::write(dir.join("notes.txt"), "todo\n").unwrap();
+    assert!(compass_engine::cache::load_current(&dir).is_none());
+
+    save();
+    std::fs::remove_file(dir.join("notes.txt")).unwrap();
+    assert!(compass_engine::cache::load_current(&dir).is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn caches_written_by_another_release_are_discarded() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("incr-producer");
     let _ = std::fs::remove_dir_all(&dir);

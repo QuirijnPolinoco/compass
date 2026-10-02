@@ -204,6 +204,11 @@ pub struct Graph {
     defines: Vec<(FileId, SymbolId)>,
     calls: Vec<(SymbolId, SymbolId, EdgeConfidence)>,
     diagnostics: Vec<Diagnostic>,
+    /// Fingerprint of the file tree this graph was built from, set by the indexer. Lets a cached
+    /// graph be checked for staleness without re-indexing. `None` means it cannot be trusted
+    /// that way (built in memory, or from a tree whose metadata could not be read).
+    #[serde(default)]
+    source_stamp: Option<u64>,
     #[serde(skip)]
     by_path: HashMap<PathBuf, FileId>,
 }
@@ -211,6 +216,17 @@ pub struct Graph {
 impl Graph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The fingerprint of the file tree this graph was built from (see [`Graph::set_source_stamp`]).
+    pub fn source_stamp(&self) -> Option<u64> {
+        self.source_stamp
+    }
+
+    /// Record which file tree this graph reflects. Core never interprets the value; the indexer
+    /// defines it and compares it when deciding whether a cached graph is still current.
+    pub fn set_source_stamp(&mut self, stamp: Option<u64>) {
+        self.source_stamp = stamp;
     }
 
     /// Add a source-code file (category [`FileCategory::code`]).
