@@ -21,6 +21,7 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
     let mut max_files = 8usize;
     let mut hook = false;
     let mut fresh = false;
+    let mut positionals: Vec<String> = Vec::new();
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -54,7 +55,27 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
                 eprintln!("compass: unknown option `{other}` for `context`");
                 return ExitCode::FAILURE;
             }
-            other => path = PathBuf::from(other),
+            other => positionals.push(other.to_string()),
+        }
+    }
+
+    // A positional that names an existing path is the scope to map; anything else is the query,
+    // so `compass context "kill switch"` works without `--query` instead of indexing a directory
+    // that does not exist and returning nothing. An explicit `--query` still wins, and surplus
+    // text is reported rather than dropped.
+    let mut loose: Vec<String> = Vec::new();
+    for p in positionals {
+        if Path::new(&p).exists() {
+            path = PathBuf::from(p);
+        } else {
+            loose.push(p);
+        }
+    }
+    if !loose.is_empty() {
+        if query.is_none() {
+            query = Some(loose.join(" "));
+        } else {
+            eprintln!("compass: ignoring extra arguments: {}", loose.join(" "));
         }
     }
 
