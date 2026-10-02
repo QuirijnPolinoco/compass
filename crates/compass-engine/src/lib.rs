@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod docs;
 pub mod index;
+pub mod literals;
 pub mod walk;
 pub mod watch;
 
