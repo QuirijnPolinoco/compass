@@ -35,6 +35,24 @@ pub fn walk(repo_root: &Path) -> Vec<Walked> {
     out
 }
 
+/// A fingerprint of a walked tree: every file's path, mtime and size, independent of walk
+/// order. Any added, removed, renamed, touched or resized file changes it. `None` when some
+/// file's metadata was unreadable (`mtime` 0), since such a tree could change unnoticed.
+pub fn tree_stamp(files: &[Walked]) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut stamp = files.len() as u64;
+    for w in files {
+        if w.mtime_ns == 0 {
+            return None;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&w.rel, w.mtime_ns, w.size).hash(&mut h);
+        // Wrapping sum: order-independent, and unlike XOR two identical entries don't cancel.
+        stamp = stamp.wrapping_add(h.finish());
+    }
+    Some(stamp)
+}
+
 /// A file's (mtime-nanos, size) for change detection. `(0, 0)` if metadata can't be read —
 /// callers treat that as "changed", so it's never reused from a stale cache.
 fn fingerprint(entry: &ignore::DirEntry) -> (u64, u64) {
