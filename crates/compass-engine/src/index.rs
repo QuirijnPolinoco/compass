@@ -104,6 +104,7 @@ pub fn index_incremental(
     // `RawCall.caller`/callee index can be mapped back to a real `SymbolId` below.
     let assemble_t = PhaseTimer::start("assemble");
     let mut graph = Graph::new();
+    graph.set_source_stamp(walk::tree_stamp(&files));
     let mut symbol_ids: Vec<Vec<SymbolId>> = Vec::with_capacity(parsed.len());
     // A file's category is a property of the extractor that mapped it (ADR-0007), so it is
     // looked up rather than cached with the extraction.

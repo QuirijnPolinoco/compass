@@ -21,6 +21,7 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
     let mut max_files = 8usize;
     let mut hook = false;
     let mut fresh = false;
+    let mut positionals: Vec<String> = Vec::new();
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -54,7 +55,27 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
                 eprintln!("compass: unknown option `{other}` for `context`");
                 return ExitCode::FAILURE;
             }
-            other => path = PathBuf::from(other),
+            other => positionals.push(other.to_string()),
+        }
+    }
+
+    // A positional that names an existing path is the scope to map; anything else is the query,
+    // so `compass context "kill switch"` works without `--query` instead of indexing a directory
+    // that does not exist and returning nothing. An explicit `--query` still wins, and surplus
+    // text is reported rather than dropped.
+    let mut loose: Vec<String> = Vec::new();
+    for p in positionals {
+        if Path::new(&p).exists() {
+            path = PathBuf::from(p);
+        } else {
+            loose.push(p);
+        }
+    }
+    if !loose.is_empty() {
+        if query.is_none() {
+            query = Some(loose.join(" "));
+        } else {
+            eprintln!("compass: ignoring extra arguments: {}", loose.join(" "));
         }
     }
 
@@ -83,15 +104,20 @@ pub(crate) fn run_context(args: &[String]) -> ExitCode {
         }
     }
 
-    // Prefer the cached graph so per-prompt injection is fast (a full re-index every prompt
-    // would tax a large repo). `--fresh` forces re-indexing; `compass init`/`watch` keep the
-    // cache current. In hook mode a failure must never block the user's prompt — exit 0 silent.
+    // Use the cached graph while it still matches the tree (a metadata-only walk), otherwise
+    // reindex incrementally and refresh the cache, so an edit made since the last prompt is
+    // always reflected. `--fresh` skips the cache entirely. In hook mode a failure must never
+    // block the user's prompt: exit 0 silently.
     let graph = if fresh {
         None
     } else {
-        compass_engine::cache::load(&path)
+        compass_engine::cache::load_current(&path)
     }
-    .or_else(|| build_graph(&path));
+    .or_else(|| {
+        let graph = build_graph(&path)?;
+        let _ = compass_engine::cache::save(&path, &graph);
+        Some(graph)
+    });
     let Some(graph) = graph else {
         return if hook {
             ExitCode::SUCCESS

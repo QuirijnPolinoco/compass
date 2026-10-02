@@ -208,6 +208,11 @@ pub struct Graph {
     defines: Vec<(FileId, SymbolId)>,
     calls: Vec<(SymbolId, SymbolId, EdgeConfidence)>,
     diagnostics: Vec<Diagnostic>,
+    /// Fingerprint of the file tree this graph was built from, set by the indexer. Lets a cached
+    /// graph be checked for staleness without re-indexing. `None` means it cannot be trusted
+    /// that way (built in memory, or from a tree whose metadata could not be read).
+    #[serde(default)]
+    source_stamp: Option<u64>,
     #[serde(skip)]
     by_path: HashMap<PathBuf, FileId>,
 }
@@ -215,6 +220,17 @@ pub struct Graph {
 impl Graph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The fingerprint of the file tree this graph was built from (see [`Graph::set_source_stamp`]).
+    pub fn source_stamp(&self) -> Option<u64> {
+        self.source_stamp
+    }
+
+    /// Record which file tree this graph reflects. Core never interprets the value; the indexer
+    /// defines it and compares it when deciding whether a cached graph is still current.
+    pub fn set_source_stamp(&mut self, stamp: Option<u64>) {
+        self.source_stamp = stamp;
     }
 
     /// Add a source-code file (category [`FileCategory::code`]).
@@ -1908,13 +1924,14 @@ impl Graph {
         let idf: Vec<f64> = hits
             .iter()
             .zip(&literal_hits)
-            .map(|(per_file, literal)| {
+            .zip(terms)
+            .map(|((per_file, literal), term)| {
                 let df = per_file
                     .iter()
                     .zip(literal)
                     .filter(|((name, dir, syms), lit)| *name || *dir || *syms > 0.0 || **lit)
                     .count();
-                (1.0 + n / (df.max(1) as f64)).ln()
+                (1.0 + n / (df.max(1) as f64)).ln() * rank::term_weight(term)
             })
             .collect();
         let about_tests = terms.iter().any(|t| t.starts_with("test") || t == "spec");

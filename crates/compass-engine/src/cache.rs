@@ -77,6 +77,16 @@ pub fn load(repo_root: &Path) -> Option<Graph> {
     Some(graph)
 }
 
+/// Like [`load`], but only if the repo has not changed since the graph was built: the tree is
+/// walked again (cheap: directory metadata only, no file is read) and its stamp compared with
+/// the one the indexer recorded. `None` means stale, absent or untrusted, and the caller should
+/// reindex. This is what lets a per-prompt hook use the cache without ever serving an old map.
+pub fn load_current(repo_root: &Path) -> Option<Graph> {
+    let graph = load(repo_root)?;
+    let stamp = graph.source_stamp()?;
+    (crate::walk::tree_stamp(&crate::walk::walk(repo_root)) == Some(stamp)).then_some(graph)
+}
+
 #[derive(Serialize)]
 struct ExtractionsOut<'a> {
     version: u32,

@@ -31,8 +31,10 @@ That's the whole hook — no shell scripting. `compass context --hook` reads Cla
 `UserPromptSubmit` payload from stdin (the prompt + cwd), ranks the most relevant files for
 that prompt, and prints a compact map slice that Claude Code adds to the context. It's
 cross-platform (the binary does the parsing), failure-safe (a problem prints nothing and never
-blocks your prompt), and fast (it loads the `.compass/` cache rather than re-indexing — run
-`compass watch` to keep that cache fresh, or it falls back to a one-off index).
+blocks your prompt), and fast: it uses the `.compass/` cache while that still matches the
+working tree (a metadata-only check, ~80ms on a 600-file repo) and reindexes only the changed
+files when it doesn't, so a prompt never sees a map older than your last edit. No `compass
+watch` needed for this.
 
 Requirements: `compass` on your `PATH` (`cargo install --path crates/compass-cli`), or use an
 absolute path in the `command`.

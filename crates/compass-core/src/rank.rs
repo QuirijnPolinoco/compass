@@ -38,6 +38,8 @@ pub(crate) fn query_terms(query: &str) -> Vec<String> {
         .filter(|w| w.len() >= 3 && !w.chars().all(|c| c.is_ascii_digit()))
         .filter(|w| !STOPWORDS.contains(&w.as_str()))
         .map(|w| stem(&w))
+        // Again after stemming: `needed` is as much filler as `need`.
+        .filter(|w| !STOPWORDS.contains(&w.as_str()))
         .filter(|w| seen.insert(w.clone()))
         .collect()
 }
@@ -50,6 +52,17 @@ pub(crate) fn identifier_words(ident: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(|w| stem(&w))
         .collect()
+}
+
+/// How much a query term counts, before its rarity: a word of three letters or fewer is matched
+/// exactly and is often an abbreviation that collides with unrelated names (`bot`, `cap`, `map`,
+/// `log`), so it says less about the target than its rarity alone suggests.
+pub(crate) fn term_weight(term: &str) -> f64 {
+    if term.chars().count() <= 3 {
+        0.5
+    } else {
+        1.0
+    }
 }
 
 /// Whether a query term matches an identifier word: equal, or (for words long enough to be
@@ -185,6 +198,21 @@ mod tests {
             query_terms("too many orders get rejected"),
             vec!["order", "reject"]
         );
+    }
+
+    #[test]
+    fn filler_reached_by_stemming_is_dropped_too() {
+        // `needed` stems to `need`, which is filler like the word itself.
+        assert_eq!(
+            query_terms("the cache needed a resize"),
+            vec!["cache", "resize"]
+        );
+    }
+
+    #[test]
+    fn short_terms_count_less_than_long_ones() {
+        assert!(term_weight("bot") < term_weight("drawdown"));
+        assert_eq!(term_weight("signer"), 1.0);
     }
 
     #[test]

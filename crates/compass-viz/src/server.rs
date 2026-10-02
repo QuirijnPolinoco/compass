@@ -99,6 +99,7 @@ fn handle(request: Request, state: &Arc<MapState>) {
         ),
         "/graph" => serve_graph(request, state, &raw),
         "/subgraph" => serve_subgraph(request, state, &raw),
+        "/search" => serve_search(request, state, &raw),
         // Read-only local token-savings dashboard (loopback only): the page and the JSON it
         // fetches, aggregated from `<repo>/.compass/sessions/*.tokens.json`.
         "/tokens" => serve_str(
@@ -164,6 +165,18 @@ fn serve_subgraph(request: Request, state: &Arc<MapState>, raw_url: &str) {
             let _ = request.respond(Response::from_string("file not in map").with_status_code(404));
         }
     }
+}
+
+/// How many ranked files the map's search lists.
+const SEARCH_RESULTS: usize = 8;
+
+fn serve_search(request: Request, state: &Arc<MapState>, raw_url: &str) {
+    let text = query_param(raw_url, "q").unwrap_or_default();
+    let pack = state.search(text.trim(), SEARCH_RESULTS);
+    serve_json(
+        request,
+        serde_json::to_string(&pack.files).unwrap_or_else(|_| "[]".to_string()),
+    );
 }
 
 /// Stream `update` events to one browser tab over SSE until it disconnects.

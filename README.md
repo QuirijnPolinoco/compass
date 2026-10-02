@@ -271,7 +271,11 @@ that **updates live as you edit** (it re-lays-out in place, no refresh).
   depend on each other), so cohesive parts of the project pop — whether you organize by feature
   or by type. Switch to color-by-folder or by-language with one click; shared hubs render neutral.
 - **Files or symbols.** A file-level graph by default; toggle **Symbols** to expand into
-  functions/classes. Plus search, zoom-to-reveal labels, and node sizes scaled by connectivity.
+  functions/classes. Plus zoom-to-reveal labels and node sizes scaled by connectivity.
+- **Search by name or by task.** Type part of a file name to highlight it, or describe what you
+  want to change ("where is the kill switch handled"): the map lists the files the same ranking
+  would hand your AI, with the matching symbols and their lines, and Enter flies to the file.
+  (A `--snapshot` page has no server, so it keeps name search only.)
 - **Certain vs. guessed edges.** Each import/call edge is tagged **Resolved** (path-exact) or
   **Heuristic** (a convention-based guess — e.g. a namespace mapped to a directory). Heuristic
   edges render **dotted + faint** so you can tell certain structure from guesses at a glance.
