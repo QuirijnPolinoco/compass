@@ -9,171 +9,156 @@ Python, that also builds its graph with tree-sitter. It was run in its code-only
 at its latest release on 2026-10-01. It is not named here; the comparison is about approaches,
 not about one project.
 
-## TL;DR (final cycle)
+This page shows the latest measurement only. Earlier rounds are summarised in one table under
+*How Compass got here*; when the benchmark is rerun, update the numbers in place and add a row
+there.
 
-- **Re-indexing after an edit:** Compass takes **0.12s** on a 613-file repo, the competitor
-  **19.6s**. A cold build is 0.35s against 15.1s.
-- **Agents:** Sonnet agents with Compass's injected map reached the right file and line with
-  **33% fewer tool calls** than plain search and **42% fewer** than the competitor, and with
-  the lowest median time per task (**9.8s**, against 12.5s and 14.5s). All three conditions
-  answered 12/12 correctly.
-- **Tokens:** Compass used the fewest (**1.3%** fewer than plain search, **2.4%** fewer than the
-  competitor). The saving is small because a fixed ~40k-token session overhead (system prompt,
-  tool definitions) dominates every run; the injected map itself is about 630 tokens.
-- **Retrieval:** the correct file is **first for 8 of 12** tasks and in the top 5 for 10, against
-  2 and 4 for the competitor's query command and 1 and 4 for a first `git grep`. On 12 untuned
-  tasks in two new repos it is first for 5, and agents still need 17% fewer tool calls than
-  plain search and 25% fewer than the competitor (see *Untuned validation*).
+## Summary
 
-## Setup
+- **Re-indexing after an edit:** Compass takes **0.17s** on a 613-file repo, the competitor
+  **19.6s**. A cold build is 0.58s against 15.1s.
+- **Agents:** over 36 tasks in six repos, Sonnet agents with Compass's injected map found the
+  right file with **26% fewer tool calls** than plain search and **30% fewer** than the
+  competitor, and had the lowest median time on every task set. All three conditions answered
+  every task correctly.
+- **Tokens:** Compass used the fewest, but only by 1.5 to 1.7%. A fixed ~40k-token session
+  overhead (system prompt, tool definitions) dominates every run; the injected map itself is
+  350 to 680 tokens.
+- **Retrieval:** on the tasks the ranking was tuned on, the correct file is first for 8 of 12.
+  On 24 tasks it was never tuned on, it is first for 10, about as often as a `git grep` whose
+  keyword was picked by someone who knew the answer.
 
-- **Subjects:** this repo (Rust) and a private 613-file Rust + TypeScript trading app. Each tool
-  got its own clone so neither indexed the other's cache.
+## How it was measured
+
+Each task is a "where do I change X" prompt in plain language with one known correct file and
+symbol, for example "Raise the medium-risk profile's maximum drawdown cap from 15% to 18%".
+Agents answered with the file, the symbol and line, and the change, without editing.
+
+There are three task sets of 12:
+
+| Set | Repos | Role |
+|---|---|---|
+| 1 | This repo (Rust) and a private 613-file Rust + TypeScript trading app | The ranking was tuned on these tasks |
+| 2 | A ~200-file TypeScript chat bot and a Go networking project (~40 Go files, plus F# that Compass does not map) | Untuned: written after tuning, by agents never shown the ranking code |
+| 3 | A 147-file Java backend and a Python + TypeScript app (51 Python, 36 TypeScript files) | Blind: written after the last ranking change and never used for tuning |
+
+In sets 2 and 3 at least half the tasks describe behaviour instead of naming the file or
+symbol. Every answer was checked against the code before the run.
+
+The three conditions:
+
+- **Plain search (base):** Glob, Grep and Read only.
 - **Competitor:** built with its code-only extract command, re-indexed with its update command,
-  queried with its query command. That condition got the exact instructions the tool's own
-  Claude Code installer writes into `CLAUDE.md`, plus its CLI.
+  queried with its query command. The agent got the exact instructions the tool's own Claude
+  Code installer writes into `CLAUDE.md`, plus its CLI.
 - **Compass:** release build. The prompt carried the output of `compass context --query <task>`
   the way the `UserPromptSubmit` hook injects it, plus the CLI for deepening.
-- **Plain search (base):** Glob, Grep and Read only.
-- **Tasks (12):** "where do I change X" prompts in plain language, each with one known correct
-  file and symbol, for example "Raise the medium-risk profile's maximum drawdown cap from 15% to
-  18%" or "Add bun.lockb to the files that are mapped but never analysed". Agents had to answer
-  with the file, the symbol and line, and the change, without editing.
-- **Machine:** Windows 11, 16 logical cores, NVMe SSD, Defender on.
 
-## Three cycles
+Each tool got its own clone so neither indexed the other's cache. Machine: Windows 11, 16
+logical cores, NVMe SSD, Defender on.
 
-| Cycle | Compass build |
-|---|---|
-| 1 | `main` before #44: substring ranking, ~1,700-token slice |
-| 2 | #44: word and rarity ranking, symbol lines, ~550-token slice |
-| 3 (final) | #44 plus #45 to #49: fresh map per prompt, fields and enum variants, doc-comment summaries, map search, task text as a positional argument |
+## Re-index speed
 
-Plain search and the competitor did not change between cycles; they were rerun each time so all
-three conditions share the same time window.
-
-## Re-index speed (final cycle)
-
-Median wall-clock, process start to exit (what a hook or a person waits for).
+Median wall-clock, process start to exit (what a hook or a person waits for). Compass is the
+build with #45 to #52; reading string literals (#52) added about 0.1s to a cold build of the
+larger repo and nothing measurable to a re-index.
 
 | | Compass (this repo) | Competitor (this repo) | Compass (613 files) | Competitor (613 files) |
 |---|---|---|---|---|
-| Cold build | 0.076s | 5.0s | 0.35s | 15.1s |
-| Re-index, nothing changed | 0.033s | 5.0s | 0.10s | 20.1s |
-| Re-index after 1 edited file | 0.093s | 5.1s | 0.12s | 19.6s |
-| Re-index after 10 edited files | 0.095s | 6.0s | 0.13s | 19.5s |
-| One query | 0.027s | 0.48s | 0.097s | 1.2s |
+| Cold build | 0.13s | 5.0s | 0.58s | 15.1s |
+| Re-index, nothing changed | 0.055s | 5.0s | 0.17s | 20.1s |
+| Re-index after 1 edited file | 0.11s | 5.1s | 0.17s | 19.6s |
+| Re-index after 10 edited files | 0.13s | 6.0s | 0.18s | 19.5s |
+| One query | 0.04s | 0.48s | 0.16s | 1.2s |
 
 The competitor's update re-runs its whole cross-file build and clustering; its cache only skips
-re-parsing (skipping clustering still took about 30s on the larger repo in cycle 1). Compass's
-query now includes a check that the cached map still matches the working tree (#45), which is
-why it went from about 0.02s to 0.1s on the larger repo.
+re-parsing. Compass's query includes a check that the cached map still matches the working tree
+(#45), so it never answers from an outdated map.
 
-## Retrieval (deterministic)
+## Retrieval
 
-What each tool hands the agent for the task prompt, and where the correct file lands in it.
-Tokens are characters / 4.
+What each tool hands the agent for the task prompt, and where the correct file lands in it:
+first / in the top 5 / anywhere, out of 12. Tokens are characters / 4.
 
-| | First | Top 5 | Found at all | Mean tokens |
+| | Set 1 (tuned) | Set 2 (untuned) | Set 3 (blind) | Mean tokens (set 1 / 2 / 3) |
 |---|---|---|---|---|
-| `git grep -il <keyword>` | 1/12 | 4/12 | 10/12 | 1,162 |
-| Competitor's query | 2/12 | 4/12 | 6/12 | 1,505 |
-| Compass, cycle 1 | 1/12 | 5/12 | 8/12 | 1,712 |
-| Compass, cycle 2 | 6/12 | 10/12 | 10/12 | 553 |
-| **Compass, final** | **8/12** | **10/12** | **11/12** | **626** |
+| `git grep -il <keyword>` | 1 / 4 / 10 | 5 / 8 / 12 | 4 / 6 / 12 | 1,162 / 106 / 348 |
+| Competitor's query | 2 / 4 / 6 | 3 / 4 / 6 | 2 / 5 / 9 | 1,505 / 1,553 / 1,722 |
+| **Compass** | **8 / 11 / 11** | **6 / 8 / 8** | **4 / 6 / 7** | 642 / 358 / 679 |
 
-The one task Compass still misses ("the panel where a user switches on real-money trading" for a
-`LiveEnablePanel` component) is found at rank 8 once doc comments are read, but not in the top 5.
-The competitor misses it as well.
+The grep row is generous: its keyword was chosen by the task writer while looking at the
+answer. It finds almost everything because it returns every file containing the word, which is
+also why an agent still has to read through its list.
 
-## Agents (live A/B)
+The gap between set 1 and sets 2 and 3 is how much the tuned figure was fitted to its tasks.
+What Compass still misses on the blind set is mostly vocabulary: the prompt says "throws away
+anything older than half a year" and the code says `cleanup`, or "keep people signed in" for a
+refresh-token lifetime. Word matching cannot bridge that; it would take synonyms or embeddings.
 
-Twelve tasks, three conditions, Sonnet, one run per cell per cycle. Tool calls exclude the one
-call every agent made to read its brief. API latency drifted between cycles, so compare within a
-cycle.
+## Agents
 
-| Cycle | | Total tokens | Tool calls | Median time per task | Total time | Correct |
+Sonnet, one run per cell. Tool calls exclude the one call every agent made to read its brief.
+Sets 1 and 2 were run with the build with #45 to #49, set 3 with #45 to #52.
+
+| Set | | Total tokens | Tool calls | Median time per task | Total time | Correct |
 |---|---|---|---|---|---|---|
-| 1 | Plain search | 566,672 | 41 | 14.4s | 163.9s | 12/12 |
-| 1 | Competitor | 551,724 | 46 | 15.9s | 201.5s | 12/12 |
-| 1 | Compass | 581,597 | 37 | 11.0s | 139.8s | 12/12 |
-| 2 | Plain search | 558,537 | 45 | 20.5s | 246.8s | 12/12 |
-| 2 | Competitor | 552,075 | 47 | 21.1s | 265.1s | 12/12 |
-| 2 | Compass | 549,396 | 31 | 14.8s | 172.7s | 12/12 |
-| **3** | Plain search | 550,537 | 42 | 12.5s | 155.2s | 12/12 |
-| **3** | Competitor | 556,636 | 48 | 14.5s | 223.1s | 12/12 |
-| **3** | **Compass** | **543,188** | **28** | **9.8s** | 172.5s | 12/12 |
+| 1 | Plain search | 550,537 | 42 | 12.5s | 155.2s | 12/12 |
+| 1 | Competitor | 556,636 | 48 | 14.5s | 223.1s | 12/12 |
+| 1 | **Compass** | **543,188** | **28** | **9.8s** | 172.5s | 12/12 |
+| 2 | Plain search | 545,966 | 36 | 11.9s | 149.9s | 12/12 |
+| 2 | Competitor | 541,896 | 40 | 13.4s | 159.4s | 12/12 |
+| 2 | **Compass** | **536,775** | **30** | **10.2s** | **125.4s** | 12/12 |
+| 3 | Plain search | 569,901 | 46 | 14.7s | 191.4s | 12/12 |
+| 3 | Competitor | 564,563 | 43 | 15.3s | 204.0s | 12/12 |
+| 3 | **Compass** | **557,788** | **34** | **13.0s** | **174.1s** | 12/12 |
+| All | Plain search | 1,666,404 | 124 | | 496.5s | 36/36 |
+| All | Competitor | 1,663,095 | 131 | | 586.5s | 36/36 |
+| All | **Compass** | **1,637,751** | **92** | | **472.0s** | 36/36 |
 
-In cycle 1 Compass was already the fastest but spent the most tokens: its ~1,700-token slice cost
-more than it saved. From cycle 2 on it spends the fewest. In cycle 3 one Compass run took 68s for
-3 tool calls (API latency; its siblings took 8 to 11s), which is why its total time is higher
-than plain search while its median is the lowest of the three; without that run its total is
-104s.
+API latency moves single runs a lot. In set 1 one Compass run took 68s for 3 tool calls while
+its siblings took 8 to 11s, which is why its total time there is above plain search even though
+its median is the lowest. Tool calls are the steadiest signal, and that is where the gap is
+largest.
 
-## Untuned validation
+## How Compass got here
 
-Cycles 1 to 3 used tasks the ranking was tuned on. To see how much of the gain carries over,
-the final build was frozen and run on 12 new tasks in two repos Compass had never been
-benchmarked on: a ~200-file TypeScript chat bot and a Go networking project (~40 Go files, plus
-F# that Compass does not map). Separate agents that were never shown any ranking code wrote
-the tasks and picked the answers; at least half of them describe behaviour instead of naming
-the file or symbol. Every answer was checked against the code before the run.
+Each row is one round of changes, measured the same way. Agent tool calls are on set 1, Compass
+against plain search in the same run.
 
-Agents, same three conditions and harness as above:
+| Build | Set 1 retrieval | Set 2 | Set 3 | Slice tokens (set 1) | Agent tool calls (set 1) |
+|---|---|---|---|---|---|
+| Before #44: substring matching | 1 / 5 / 8 | not run | not run | 1,712 | 37 vs 41 |
+| #44: word and rarity ranking, symbol lines | 6 / 10 / 10 | not run | not run | 553 | 31 vs 45 |
+| #45 to #49: fresh map, fields and variants, doc comments, map search | 8 / 10 / 11 | 5 / 7 / 8 | 3 / 6 / 6 | 626 | 28 vs 42 |
+| #51, #52: short query words, string literals | 8 / 11 / 11 | 6 / 8 / 8 | 4 / 6 / 7 | 642 | not rerun |
 
-| | Plain search | Competitor | **Compass** |
-|---|---|---|---|
-| Correct | 12/12 | 12/12 | 12/12 |
-| Total tokens | 545,966 | 541,896 | **536,775** |
-| Tool calls | 36 | 40 | **30** |
-| Median time per task | 11.9s | 13.4s | **10.2s** |
-| Total time | 149.9s | 159.4s | **125.4s** |
+The first build was already the fastest of the three conditions but spent the most tokens: its
+~1,700-token slice cost more than it saved. From #44 on it spends the fewest.
 
-Retrieval on the same tasks:
-
-| | First | Top 5 | Found at all | Mean tokens |
-|---|---|---|---|---|
-| `git grep -il <keyword>` | 5/12 | 8/12 | 12/12 | 106 |
-| Competitor's query | 3/12 | 4/12 | 6/12 | 1,553 |
-| Compass | 5/12 | 7/12 | 8/12 | 353 |
-
-The agent-level advantage holds on new code, at a smaller size: 17% fewer tool calls than plain
-search (33% on the tuned tasks) and 25% fewer than the competitor, and the shortest times. The
-ranking drops more, from first for 8 of 12 tuned tasks to 5 of 12; that gap is how much the
-tuned figure was fitted to its tasks. The grep row is generous: its keyword was chosen by the
-task writer while looking at the answer.
-
-What the four misses have in common, and what Compass should index next:
-
-- The value to change lives in a **string literal** (`'Maybe'`, `'twitter.com'`), which Compass
-  does not see.
-- It is a **key in a configuration object** (`qualityContent: { minEmojiCount }`), also not
-  indexed.
-- **Short stems**: "fixed" does not match `fix`.
-- A **rare short word** in the prompt ("bot") matches one file name strongly and outranks the
-  answer.
-- The repo's doc comments are **in another language** than the prompt, so summaries do not help.
-
-## What changed in Compass
+What each change does:
 
 - **#44, ranking:** identifiers and paths are split into words, lightly stemmed and matched by
   word or prefix instead of raw substring; filler is dropped; each term is weighted by how rare
-  it is. Each listed file shows its matching symbols with their line (`medium_risk:120`), import
-  lists are capped, and the default is 8 files.
+  it is. Each listed file shows its matching symbols with their line (`medium_risk:120`).
 - **#45, freshness:** the hook checks the cached map against the working tree on every prompt
-  and reindexes only after an edit, so it never injects an outdated map.
+  and reindexes only after an edit.
 - **#46, fields and enum variants** are symbols in 11 languages, and big files no longer win just
   by having many symbols.
 - **#47, doc comments:** the comment above each symbol and each file's leading doc become one-line
   summaries used for ranking and shown in the pack.
 - **#48, map search:** `compass map` searches by task with the same ranking.
 - **#49:** `compass context "some task"` treats text that is not a path as the task.
+- **#51, short words:** query words of three letters or fewer count half, so a word like `bot`
+  that names one file no longer outranks the answer.
+- **#52, string literals and config keys:** short strings and object keys are weak evidence, so
+  a task that quotes a message or a setting finds the file that contains it.
 
 ## Limitations
 
-- n = 1 per cell per cycle; compare within a cycle.
-- 12 tasks per set, all "find where to change X". The ranking was tuned on the first set, so
-  read its retrieval numbers next to the untuned validation above.
+- One run per cell. Token and time differences of a few percent are within run-to-run noise;
+  the tool-call gap is not.
+- 36 tasks, all "find where to change X". Nothing here measures editing or multi-file changes.
 - The competitor ran code-only. Its LLM-backed extraction for docs and papers was not tested.
-- Cycle 3 was measured on a local build of `main` with #45 to #49 applied, before they were
+- The re-index rows for the competitor are from the earlier round; its build did not change.
+- The latest round was measured on local builds with the open PRs applied, before they were
   merged.
