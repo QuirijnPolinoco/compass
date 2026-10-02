@@ -210,6 +210,26 @@ impl Visitor<'_> {
                 };
                 return self.enter_function(node, kind, scope);
             }
+            "property_declaration" => {
+                // Only properties declared directly in a class/object body are members; top-level
+                // and local properties are not.
+                if node.parent().is_some_and(|p| is_class_body(p.kind())) {
+                    self.push_property_fields(node);
+                }
+            }
+            "class_parameter" => {
+                // Only `val`/`var` parameters of a primary constructor become properties.
+                if has_child_kind(node, "val") || has_child_kind(node, "var") {
+                    if let Some(name) = first_child_of_kind(node, "identifier") {
+                        self.push_field(name);
+                    }
+                }
+            }
+            "enum_entry" => {
+                if let Some(name) = first_child_of_kind(node, "identifier") {
+                    self.push_member(name, SymbolKind::Variant);
+                }
+            }
             "import" => {
                 if let Some(qi) = first_child_of_kind(node, "qualified_identifier") {
                     if let Ok(path) = qi.utf8_text(self.src) {
@@ -239,6 +259,52 @@ impl Visitor<'_> {
         while i < node.child_count() {
             if let Some(child) = node.child(i as u32) {
                 self.visit(child, scope);
+            }
+            i += 1;
+        }
+    }
+
+    fn push_field(&mut self, name_node: Node) {
+        self.push_member(name_node, SymbolKind::Field);
+    }
+
+    /// Append a member symbol. Members are never set as the calls' caller.
+    fn push_member(&mut self, name_node: Node, kind: SymbolKind) {
+        if let Ok(name) = name_node.utf8_text(self.src) {
+            self.symbols.push(ExtractedSymbol {
+                name: name.to_string(),
+                kind,
+                span: span_of(name_node),
+            });
+        }
+    }
+
+    /// One Field per declared name of a body-level property (`val a`, or `val (a, b)`).
+    fn push_property_fields(&mut self, node: Node) {
+        let mut i = 0usize;
+        while i < node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                match child.kind() {
+                    "variable_declaration" => {
+                        if let Some(name) = first_child_of_kind(child, "identifier") {
+                            self.push_field(name);
+                        }
+                    }
+                    "multi_variable_declaration" => {
+                        let mut j = 0usize;
+                        while j < child.child_count() {
+                            if let Some(var) = child.child(j as u32) {
+                                if var.kind() == "variable_declaration" {
+                                    if let Some(name) = first_child_of_kind(var, "identifier") {
+                                        self.push_field(name);
+                                    }
+                                }
+                            }
+                            j += 1;
+                        }
+                    }
+                    _ => {}
+                }
             }
             i += 1;
         }
@@ -299,6 +365,10 @@ fn callee_name(function: Node, src: &[u8]) -> Option<String> {
     Some(name.utf8_text(src).ok()?.to_string())
 }
 
+fn is_class_body(kind: &str) -> bool {
+    matches!(kind, "class_body" | "enum_class_body")
+}
+
 fn has_child_kind(node: Node, kind: &str) -> bool {
     let mut i = 0usize;
     while i < node.child_count() {
@@ -356,7 +426,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method};
+    use compass_core::SymbolKind::{Class, Enum, Field, Function, Interface, Method, Variant};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -421,12 +491,13 @@ fun helper() {}
             .map(|s| (s.name, s.kind))
             .collect();
         got.sort();
-        // Note: enum entries (RED, GREEN) are not declarations, so they are not
-        // extracted; `object` declarations map to Class; functions are Method inside
-        // a class/interface/object and Function at top level.
+        // Note: `object` declarations map to Class; functions are Method inside
+        // a class/interface/object and Function at top level; enum entries are Variants.
         let mut want = vec![
             ("Color".to_string(), Enum),
+            ("GREEN".to_string(), Variant),
             ("Greeter".to_string(), Class),
+            ("RED".to_string(), Variant),
             ("Singleton".to_string(), Class),
             ("Speaker".to_string(), Interface),
             ("greet".to_string(), Method),
@@ -569,5 +640,59 @@ class Service {
                 .map(|(a, b)| (a.to_string(), b.to_string()))
                 .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_fields_and_variants_with_lines() {
+        let src = "class Cfg(val a: Int, var b: Int, c: Int, private val d: Int) {
+    val x: Int = 1
+    var y = 2
+    fun f() { val local = 1 }
+}
+enum class E {
+    R,
+    G(1);
+    val z = 1
+}
+val top = 1
+";
+        let ex = extract(src);
+        let got: Vec<(String, SymbolKind, usize)> = ex
+            .symbols
+            .iter()
+            .filter(|s| matches!(s.kind, Field | Variant))
+            .map(|s| (s.name.clone(), s.kind, s.span.start_row + 1))
+            .collect();
+        let want = vec![
+            ("a".to_string(), Field, 1),
+            ("b".to_string(), Field, 1),
+            ("d".to_string(), Field, 1),
+            ("x".to_string(), Field, 2),
+            ("y".to_string(), Field, 3),
+            ("R".to_string(), Variant, 7),
+            ("G".to_string(), Variant, 8),
+            ("z".to_string(), Field, 9),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_member_never_captures_calls() {
+        let src = r#"
+class Service(val id: Int) {
+    val x = 1
+    fun run() {
+        helper()
+    }
+}
+enum class E { A, B }
+"#;
+        let ex = extract(src);
+        let got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        assert_eq!(got, vec![("run".to_string(), "helper".to_string())]);
     }
 }

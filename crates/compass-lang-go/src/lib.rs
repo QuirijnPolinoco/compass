@@ -244,6 +244,7 @@ impl Visitor<'_> {
                 };
                 push_named(node, "name", kind, self.src, self.symbols);
             }
+            "field_declaration" => self.push_fields(node),
             "import_spec" => {
                 if let Some(path) = node.child_by_field_name("path") {
                     if let Ok(text) = path.utf8_text(self.src) {
@@ -288,6 +289,28 @@ impl Visitor<'_> {
                 receiver,
             },
         );
+    }
+
+    /// One `Field` per name in a struct field declaration (`X, Y int` gives two). Embedded
+    /// fields have no name and are skipped; interface method specs are not `field_declaration`.
+    fn push_fields(&mut self, node: Node) {
+        let in_struct = node
+            .parent()
+            .and_then(|list| list.parent())
+            .is_some_and(|ty| ty.kind() == "struct_type");
+        if !in_struct {
+            return;
+        }
+        let mut cursor = node.walk();
+        for name in node.children_by_field_name("name", &mut cursor) {
+            if let Ok(text) = name.utf8_text(self.src) {
+                self.symbols.push(ExtractedSymbol {
+                    name: text.to_string(),
+                    kind: SymbolKind::Field,
+                    span: span_of(name),
+                });
+            }
+        }
     }
 
     fn recurse(&mut self, node: Node, scope: &Scope) {
@@ -377,7 +400,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Function, Interface, Method, Other, Struct};
+    use compass_core::SymbolKind::{Field, Function, Interface, Method, Other, Struct};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -449,6 +472,7 @@ func main() {
             ("Greet".to_string(), Method),
             ("Greeter".to_string(), Interface),
             ("ID".to_string(), Other),
+            ("Name".to_string(), Field),
             ("New".to_string(), Function),
             ("Person".to_string(), Struct),
             ("SetName".to_string(), Method),
@@ -617,5 +641,61 @@ func (s *Svc) stop() {}
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn emits_struct_fields_one_per_name_and_skips_embedded() {
+        let src = "package m
+
+type Cfg struct {
+	X, Y int
+	io.Reader
+	*Base
+	Max float64
+}
+
+type I interface {
+	Run()
+}
+";
+        let ex = extract(src);
+        let got: Vec<(&str, SymbolKind, usize)> = ex
+            .symbols
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind, s.span.start_row + 1))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Cfg", Struct, 3),
+                ("X", Field, 4),
+                ("Y", Field, 4),
+                ("Max", Field, 7),
+                ("I", Interface, 10),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let src = "package m
+
+type S struct {
+	N int
+}
+
+func (s *S) Run() {
+	s.stop()
+}
+
+func (s *S) stop() {}
+";
+        let ex = extract(src);
+        let got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        assert_eq!(got, vec![("Run".to_string(), "stop".to_string())]);
     }
 }

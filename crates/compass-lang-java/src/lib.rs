@@ -211,7 +211,20 @@ impl Visitor<'_> {
                 push_named(node, "name", SymbolKind::Enum, self.src, self.symbols)
             }
             "record_declaration" => {
-                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols)
+                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols);
+                if let Some(params) = node.child_by_field_name("parameters") {
+                    self.push_record_components(params);
+                }
+            }
+            // One symbol per declarator: `int a, b;` names two fields.
+            "field_declaration" | "constant_declaration" => {
+                let mut cursor = node.walk();
+                for decl in node.children_by_field_name("declarator", &mut cursor) {
+                    push_named(decl, "name", SymbolKind::Field, self.src, self.symbols);
+                }
+            }
+            "enum_constant" => {
+                push_named(node, "name", SymbolKind::Variant, self.src, self.symbols)
             }
             "method_declaration" | "constructor_declaration" => {
                 return self.enter_function(node, SymbolKind::Method, scope);
@@ -271,6 +284,28 @@ impl Visitor<'_> {
             scope.current_fn
         };
         self.recurse(node, &Scope { current_fn });
+    }
+
+    /// A record's header parameters are its components, which are fields.
+    fn push_record_components(&mut self, params: Node) {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            match param.kind() {
+                "formal_parameter" => {
+                    push_named(param, "name", SymbolKind::Field, self.src, self.symbols)
+                }
+                // A varargs component (`String... tags`) nests its name in a declarator.
+                "spread_parameter" => {
+                    let mut inner = param.walk();
+                    for child in param.named_children(&mut inner) {
+                        if child.kind() == "variable_declarator" {
+                            push_named(child, "name", SymbolKind::Field, self.src, self.symbols);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn recurse(&mut self, node: Node, scope: &Scope) {
@@ -339,7 +374,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Class, Enum, Interface, Method, Struct};
+    use compass_core::SymbolKind::{Class, Enum, Field, Interface, Method, Struct, Variant};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -402,10 +437,14 @@ record Point(int x, int y) {}
             ("Greeter".to_string(), Interface),
             ("Main".to_string(), Class),
             ("Main".to_string(), Method),
+            ("GREEN".to_string(), Variant),
             ("Point".to_string(), Struct),
+            ("RED".to_string(), Variant),
             ("greet".to_string(), Method),
             ("main".to_string(), Method),
             ("run".to_string(), Method),
+            ("x".to_string(), Field),
+            ("y".to_string(), Field),
         ];
         want.sort();
         assert_eq!(got, want);
@@ -568,5 +607,58 @@ class Service {
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn emits_fields_record_components_and_enum_constants() {
+        let src = "class A {
+    int a, b;
+    static final String K = \"k\";
+    void m() { int local = 1; }
+}
+interface I {
+    int LIMIT = 3;
+}
+enum E { ONE, TWO }
+record R(int x, String... tags) {}
+";
+        let got: Vec<(String, SymbolKind, usize)> = extract(src)
+            .symbols
+            .into_iter()
+            .filter(|s| matches!(s.kind, Field | Variant))
+            .map(|s| (s.name, s.kind, s.span.start_row + 1))
+            .collect();
+        let want: Vec<(String, SymbolKind, usize)> = [
+            ("a", Field, 2),
+            ("b", Field, 2),
+            ("K", Field, 3),
+            ("LIMIT", Field, 7),
+            ("ONE", Variant, 9),
+            ("TWO", Variant, 9),
+            ("x", Field, 10),
+            ("tags", Field, 10),
+        ]
+        .into_iter()
+        .map(|(n, k, l)| (n.to_string(), k, l))
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let src = "class S {
+    int f = 1;
+    void run() { helper(); }
+    void helper() {}
+}
+";
+        let ex = extract(src);
+        let got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        assert_eq!(got, [("run".to_string(), "helper".to_string())]);
+        assert_eq!(ex.symbols[ex.calls[0].caller].kind, Method);
     }
 }

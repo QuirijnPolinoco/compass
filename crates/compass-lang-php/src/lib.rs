@@ -145,6 +145,9 @@ impl Visitor<'_> {
             "enum_declaration" => {
                 push_named(node, "name", SymbolKind::Enum, self.src, self.symbols)
             }
+            "enum_case" => push_named(node, "name", SymbolKind::Variant, self.src, self.symbols),
+            "property_element" => self.push_variable(first_child_of_kind(node, "variable_name")),
+            "property_promotion_parameter" => self.push_variable(node.child_by_field_name("name")),
             "method_declaration" => return self.enter_function(node, SymbolKind::Method, scope),
             "function_definition" => return self.enter_function(node, SymbolKind::Function, scope),
             "require_expression"
@@ -175,6 +178,21 @@ impl Visitor<'_> {
             _ => {}
         }
         self.recurse(node, scope);
+    }
+
+    /// A property or promoted constructor parameter: a `variable_name` node whose `name` child
+    /// is the identifier without the leading `$`.
+    fn push_variable(&mut self, var: Option<Node>) {
+        let name = var.and_then(|v| first_child_of_kind(v, "name"));
+        if let Some(name) = name {
+            if let Ok(text) = name.utf8_text(self.src) {
+                self.symbols.push(ExtractedSymbol {
+                    name: text.to_string(),
+                    kind: SymbolKind::Field,
+                    span: span_of(name),
+                });
+            }
+        }
     }
 
     fn recurse(&mut self, node: Node, scope: &Scope) {
@@ -287,7 +305,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method};
+    use compass_core::SymbolKind::{Class, Enum, Function, Interface, Method, Variant};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -357,9 +375,11 @@ function main(): void {
             .collect();
         got.sort();
         // A trait is extracted as Class (PHP interfaces are separate). The `enum` cases
-        // are not declarations, so only `Suit` itself appears. The abstract interface
+        // are Variants. The abstract interface
         // method `speak` is a `method_declaration`, so it is extracted like `greet`.
         let mut want = vec![
+            ("Hearts".to_string(), Variant),
+            ("Spades".to_string(), Variant),
             ("Greeter".to_string(), Class),
             ("Loud".to_string(), Class),
             ("Speaker".to_string(), Interface),
@@ -473,5 +493,58 @@ helper();
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_fields_and_variants_with_lines() {
+        let src = "<?php
+class P {
+    public int $a = 1, $b;
+    private static $c;
+    public function __construct(private string $d, int $plain) {}
+}
+trait T {
+    protected $e;
+}
+enum E {
+    case X;
+    case Y;
+    const K = 1;
+}
+";
+        let got: Vec<(String, SymbolKind, usize)> = extract(src)
+            .symbols
+            .into_iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Field | Variant))
+            .map(|s| (s.name, s.kind, s.span.start_row + 1))
+            .collect();
+        let f = SymbolKind::Field;
+        let want = vec![
+            ("a".to_string(), f, 3),
+            ("b".to_string(), f, 3),
+            ("c".to_string(), f, 4),
+            ("d".to_string(), f, 5),
+            ("e".to_string(), f, 8),
+            ("X".to_string(), Variant, 11),
+            ("Y".to_string(), Variant, 12),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let src = "<?php
+class S {
+    private $x;
+    function run() { $this->go(); }
+}
+";
+        let ex = extract(src);
+        let got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        assert_eq!(got, vec![("run".to_string(), "go".to_string())]);
     }
 }

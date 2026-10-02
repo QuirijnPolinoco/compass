@@ -393,6 +393,12 @@ impl Walk<'_> {
                 push_named(node, "name", SymbolKind::Struct, self.src, self.symbols)
             }
             "enum_item" => push_named(node, "name", SymbolKind::Enum, self.src, self.symbols),
+            // Named members only: tuple fields have no `name`, so `push_named` skips them.
+            // Falls through to recurse so crate paths in field types are still captured.
+            "field_declaration" => {
+                push_named(node, "name", SymbolKind::Field, self.src, self.symbols)
+            }
+            "enum_variant" => push_named(node, "name", SymbolKind::Variant, self.src, self.symbols),
             "type_item" => push_named(node, "name", SymbolKind::Other, self.src, self.symbols),
             "const_item" | "static_item" => {
                 push_named(node, "name", SymbolKind::Constant, self.src, self.symbols)
@@ -503,7 +509,7 @@ fn span_of(node: Node) -> Span {
 mod tests {
     use super::*;
     use compass_core::SymbolKind::{
-        Constant, Enum, Function, Interface, Method, Module, Other, Struct,
+        Constant, Enum, Field, Function, Interface, Method, Module, Other, Struct, Variant,
     };
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
@@ -598,6 +604,12 @@ fn main() {
             ("Point".to_string(), Struct),
             ("Bits".to_string(), Struct),
             ("Color".to_string(), Enum),
+            // named struct/union fields and enum variants.
+            ("x".to_string(), Field),
+            ("int".to_string(), Field),
+            ("float".to_string(), Field),
+            ("Red".to_string(), Variant),
+            ("Green".to_string(), Variant),
             // type alias -> Other.
             ("Pair".to_string(), Other),
             // const and static both map to Constant.
@@ -613,6 +625,67 @@ fn main() {
         ];
         want.sort();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_fields_and_variants_with_lines() {
+        let src = "struct Cfg {
+    max_dd: f64,
+    pub min: u8,
+}
+
+struct Pair(i32, i32);
+
+enum Mode {
+    Fast,
+    Slow { delay: u32 },
+    Tup(u8),
+}
+";
+        let got: Vec<(String, SymbolKind, usize)> = extract(src)
+            .symbols
+            .into_iter()
+            .map(|s| (s.name, s.kind, s.span.start_row + 1))
+            .collect();
+        let m = |n: &str, k, l| (n.to_string(), k, l);
+        assert_eq!(
+            got,
+            [
+                m("Cfg", Struct, 1),
+                m("max_dd", Field, 2),
+                m("min", Field, 3),
+                m("Pair", Struct, 6),
+                m("Mode", Enum, 8),
+                m("Fast", Variant, 9),
+                m("Slow", Variant, 10),
+                m("delay", Field, 10),
+                m("Tup", Variant, 11),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let src = "struct S {
+    a: u8,
+}
+
+impl S {
+    fn run(&self) {
+        helper();
+    }
+}
+
+fn helper() {}
+";
+        let ex = extract(src);
+        let names: Vec<&str> = ex.symbols.iter().map(|s| s.name.as_str()).collect();
+        let got: Vec<(&str, &str)> = ex
+            .calls
+            .iter()
+            .map(|c| (names[c.caller], c.callee.as_str()))
+            .collect();
+        assert_eq!(got, [("run", "helper")]);
     }
 
     #[test]

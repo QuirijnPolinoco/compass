@@ -11,7 +11,8 @@ use crate::index::ExtractionCache;
 /// Bump on any breaking change to a serialized `compass-core`/`compass-extract` type ⇒ stale
 /// caches reindex. v2: `Graph` gained `calls` edges and the per-file extraction cache landed.
 /// v3: import/call edges gained a trailing `EdgeConfidence` (the serialized tuple shape changed).
-pub const CACHE_FORMAT_VERSION: u32 = 3;
+/// v4: `SymbolKind::Variant`, and extractors emit fields and variants that older caches lack.
+pub const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// The Compass release that wrote a cache file. Extractors improve between releases without the
 /// on-disk *format* changing (a language starts emitting calls, a new kind of symbol, …), and an

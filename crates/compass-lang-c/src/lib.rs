@@ -143,6 +143,24 @@ impl Visitor<'_> {
                     push_named(node, "name", SymbolKind::Enum, self.src, self.symbols);
                 }
             }
+            // One Field per declarator (`int a, *b;`). Unnamed bitfields have no declarator.
+            "field_declaration" => {
+                let mut cursor = node.walk();
+                for d in node.children_by_field_name("declarator", &mut cursor) {
+                    if let Some(name_node) = field_name_node(d) {
+                        // An unnamed bitfield parses to an empty (missing) identifier.
+                        let name = name_node.utf8_text(self.src).unwrap_or("");
+                        if !name.is_empty() {
+                            self.symbols.push(ExtractedSymbol {
+                                name: name.to_string(),
+                                kind: SymbolKind::Field,
+                                span: span_of(name_node),
+                            });
+                        }
+                    }
+                }
+            }
+            "enumerator" => push_named(node, "name", SymbolKind::Variant, self.src, self.symbols),
             "function_definition" => return self.enter_function(node, scope),
             "preproc_include" => {
                 if let Some(path) = node.child_by_field_name("path") {
@@ -230,6 +248,21 @@ fn declarator_name(mut node: Node, src: &[u8]) -> Option<String> {
     }
 }
 
+/// Descend a member declarator (pointer/array/function wrappers, including the parenthesized
+/// `(*cb)(int)` function-pointer form) to its `field_identifier`.
+fn field_name_node(mut node: Node) -> Option<Node> {
+    loop {
+        match node.kind() {
+            "field_identifier" => return Some(node),
+            "function_declarator" | "pointer_declarator" | "array_declarator" => {
+                node = node.child_by_field_name("declarator")?;
+            }
+            "parenthesized_declarator" => node = node.named_child(0)?,
+            _ => return None,
+        }
+    }
+}
+
 fn push_named(
     node: Node,
     field: &str,
@@ -261,7 +294,7 @@ fn span_of(node: Node) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compass_core::SymbolKind::{Enum, Function, Struct};
+    use compass_core::SymbolKind::{Enum, Field, Function, Struct, Variant};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -336,10 +369,19 @@ struct Point make_point(int x, int y) {
             .map(|s| (s.name, s.kind))
             .collect();
         got.sort();
-        // Only definitions with a body, plus every function (union -> Struct);
-        // the bodyless `struct Node` / `enum Color` decoys are absent.
+        // Only definitions with a body, plus every function (union -> Struct) and the
+        // members (fields, enumerators); the bodyless `struct Node` / `enum Color` decoys
+        // are absent.
         let mut want = vec![
             ("Direction".to_string(), Enum),
+            ("NORTH".to_string(), Variant),
+            ("SOUTH".to_string(), Variant),
+            ("EAST".to_string(), Variant),
+            ("WEST".to_string(), Variant),
+            ("x".to_string(), Field),
+            ("y".to_string(), Field),
+            ("i".to_string(), Field),
+            ("f".to_string(), Field),
             ("Point".to_string(), Struct),
             ("Value".to_string(), Struct),
             ("add".to_string(), Function),
@@ -349,6 +391,48 @@ struct Point make_point(int x, int y) {
         ];
         want.sort();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn extracts_fields_and_variants_with_lines() {
+        let src = "struct S {
+    int a, *b;
+    int arr[4];
+    void (*cb)(int);
+    int : 3;
+    int bits : 2;
+    struct { int inner; };
+};
+enum E { ONE, TWO = 2 };
+";
+        let got: Vec<(String, SymbolKind, usize)> = extract(src)
+            .symbols
+            .into_iter()
+            .map(|s| (s.name, s.kind, s.span.start_row + 1))
+            .collect();
+        let want = vec![
+            ("S".to_string(), Struct, 1),
+            ("a".to_string(), Field, 2),
+            ("b".to_string(), Field, 2),
+            ("arr".to_string(), Field, 3),
+            ("cb".to_string(), Field, 4),
+            ("bits".to_string(), Field, 6),
+            ("inner".to_string(), Field, 7),
+            ("E".to_string(), Enum, 9),
+            ("ONE".to_string(), Variant, 9),
+            ("TWO".to_string(), Variant, 9),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_member_does_not_capture_calls() {
+        let src = "struct S { int a; };
+int f(void) { return g(); }
+";
+        let ex = extract(src);
+        assert_eq!(ex.calls.len(), 1);
+        assert_eq!(ex.symbols[ex.calls[0].caller].name, "f");
     }
 
     #[test]

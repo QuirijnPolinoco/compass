@@ -43,6 +43,7 @@ impl Extractor for PythonExtractor {
             symbols: &mut symbols,
             imports: &mut imports,
             calls: &mut calls,
+            class_fields: Vec::new(),
         };
         visitor.visit(tree.root_node(), false, None);
         Extraction {
@@ -217,6 +218,9 @@ struct Visitor<'a> {
     symbols: &'a mut Vec<ExtractedSymbol>,
     imports: &'a mut Vec<RawImport>,
     calls: &'a mut Vec<RawCall>,
+    /// One set per enclosing class: member names already emitted, so a name is a symbol once
+    /// per class even when it is declared in the body and again in `__init__`.
+    class_fields: Vec<HashSet<String>>,
 }
 
 impl Visitor<'_> {
@@ -238,12 +242,18 @@ impl Visitor<'_> {
                     current_fn
                 };
                 // A function body's own defs are plain functions, not methods.
+                if in_class && !self.class_fields.is_empty() && is_init(node, self.src) {
+                    self.push_instance_fields(node);
+                }
                 self.recurse(node, false, caller);
                 return;
             }
             "class_definition" => {
                 push_named(node, "name", SymbolKind::Class, self.src, self.symbols);
+                self.class_fields.push(HashSet::new());
+                self.push_class_fields(node);
                 self.recurse(node, true, current_fn);
+                self.class_fields.pop();
                 return;
             }
             "import_statement" => extract_plain_imports(node, self.src, self.imports),
@@ -273,6 +283,85 @@ impl Visitor<'_> {
         self.recurse(node, in_class, current_fn);
     }
 
+    /// Class-body attributes (`x = 1`, `x: int = 0`, bare `x: int`): Variants in an Enum
+    /// subclass, Fields otherwise. Only simple identifier targets directly in the body.
+    fn push_class_fields(&mut self, class: Node) {
+        let kind = if has_enum_base(class, self.src) {
+            SymbolKind::Variant
+        } else {
+            SymbolKind::Field
+        };
+        let Some(body) = class.child_by_field_name("body") else {
+            return;
+        };
+        for i in 0..body.child_count() {
+            let Some(stmt) = body.child(i as u32) else {
+                continue;
+            };
+            if stmt.kind() != "expression_statement" {
+                continue;
+            }
+            let Some(assign) = stmt.child(0).filter(|n| n.kind() == "assignment") else {
+                continue;
+            };
+            if let Some(target) = assign.child_by_field_name("left") {
+                self.push_member(target, kind);
+            }
+        }
+    }
+
+    /// `self.<name> = ...` anywhere in an `__init__` body (not inside nested defs).
+    fn push_instance_fields(&mut self, init: Node) {
+        if let Some(body) = init.child_by_field_name("body") {
+            self.collect_self_assignments(body);
+        }
+    }
+
+    fn collect_self_assignments(&mut self, node: Node) {
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i as u32) else {
+                continue;
+            };
+            match child.kind() {
+                "function_definition" | "class_definition" | "lambda" => {}
+                "assignment" => {
+                    if let Some(attr) = child.child_by_field_name("left") {
+                        if let Some(name) = self_attribute(attr, self.src) {
+                            self.push_member(name, SymbolKind::Field);
+                        }
+                    }
+                    self.collect_self_assignments(child);
+                }
+                _ => self.collect_self_assignments(child),
+            }
+        }
+    }
+
+    /// Emit `target` as a member symbol when it is a plain identifier not yet seen in the
+    /// current class.
+    fn push_member(&mut self, target: Node, kind: SymbolKind) {
+        if target.kind() != "identifier" {
+            return;
+        }
+        let Ok(name) = target.utf8_text(self.src) else {
+            return;
+        };
+        let Some(seen) = self.class_fields.last_mut() else {
+            return;
+        };
+        if kind == SymbolKind::Variant && name.starts_with('_') && name.ends_with('_') {
+            // `_ignore_`, `_order_`, `__module__`: Enum machinery, not members.
+            return;
+        }
+        if seen.insert(name.to_string()) {
+            self.symbols.push(ExtractedSymbol {
+                name: name.to_string(),
+                kind,
+                span: span_of(target),
+            });
+        }
+    }
+
     fn recurse(&mut self, node: Node, in_class: bool, current_fn: Option<usize>) {
         let mut i = 0usize;
         while i < node.child_count() {
@@ -282,6 +371,44 @@ impl Visitor<'_> {
             i += 1;
         }
     }
+}
+
+fn is_init(func: Node, src: &[u8]) -> bool {
+    func.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(src).ok())
+        == Some("__init__")
+}
+
+/// The `name` identifier of a `self.name` attribute node, else `None`.
+fn self_attribute<'t>(attr: Node<'t>, src: &[u8]) -> Option<Node<'t>> {
+    if attr.kind() != "attribute" {
+        return None;
+    }
+    let object = attr.child_by_field_name("object")?;
+    if object.kind() != "identifier" || object.utf8_text(src).ok()? != "self" {
+        return None;
+    }
+    attr.child_by_field_name("attribute")
+}
+
+/// True when a base of the class is named `*Enum` or `*Flag` (`Enum`, `IntEnum`, `enum.StrEnum`,
+/// `Flag`, `IntFlag`).
+fn has_enum_base(class: Node, src: &[u8]) -> bool {
+    let Some(bases) = class.child_by_field_name("superclasses") else {
+        return false;
+    };
+    (0..bases.child_count()).any(|i| {
+        let Some(base) = bases.child(i as u32) else {
+            return false;
+        };
+        let name = match base.kind() {
+            "identifier" => Some(base),
+            "attribute" => base.child_by_field_name("attribute"),
+            _ => None,
+        };
+        name.and_then(|n| n.utf8_text(src).ok())
+            .is_some_and(|t| t.ends_with("Enum") || t.ends_with("Flag"))
+    })
 }
 
 /// The callee name when it can be named without type information: a bare name (`foo(..)`,
@@ -625,5 +752,72 @@ helper()
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn emits_fields_and_variants() {
+        let src = r#"
+LIMIT = 1
+
+class Config:
+    retries = 3
+    name: str = "x"
+    label: str
+    a, b = 1, 2
+
+    def __init__(self):
+        self.host = "h"
+        self.retries = 4
+        self.items[0] = 1
+        if True:
+            self.port = 1
+        def helper():
+            self.nested = 1
+        local = 2
+
+class Color(enum.Enum):
+    RED = 1
+    GREEN = 2
+    _ignore_ = []
+
+class Mode(IntFlag):
+    A: int = 1
+"#;
+        let got: Vec<(String, SymbolKind, usize)> = extract(src)
+            .symbols
+            .into_iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Field | SymbolKind::Variant))
+            .map(|s| (s.name, s.kind, s.span.start_row + 1))
+            .collect();
+        let f = SymbolKind::Field;
+        let v = SymbolKind::Variant;
+        let want: Vec<(String, SymbolKind, usize)> = [
+            ("retries", f, 5),
+            ("name", f, 6),
+            ("label", f, 7),
+            ("host", f, 11),
+            ("port", f, 15),
+            ("RED", v, 21),
+            ("GREEN", v, 22),
+            ("A", v, 26),
+        ]
+        .iter()
+        .map(|(n, k, l)| (n.to_string(), *k, *l))
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_field_never_captures_calls() {
+        let src = r#"
+class Svc:
+    size = compute()
+    def run(self):
+        return helper()
+"#;
+        let ex = extract(src);
+        assert_eq!(ex.calls.len(), 1);
+        assert_eq!(ex.symbols[ex.calls[0].caller].name, "run");
+        assert_eq!(ex.calls[0].callee, "helper");
     }
 }

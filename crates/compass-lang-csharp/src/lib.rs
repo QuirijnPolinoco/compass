@@ -200,7 +200,44 @@ impl Visitor<'_> {
                 push_named(node, "name", SymbolKind::Enum, self.src, self.symbols)
             }
             "record_declaration" => {
-                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols)
+                push_named(node, "name", SymbolKind::Struct, self.src, self.symbols);
+                // Positional record parameters are the record's properties.
+                let params = (0..node.named_child_count())
+                    .filter_map(|i| node.named_child(i as u32))
+                    .find(|c| c.kind() == "parameter_list");
+                if let Some(params) = params {
+                    for i in 0..params.named_child_count() {
+                        if let Some(p) = params.named_child(i as u32) {
+                            if p.kind() == "parameter" {
+                                push_named(p, "name", SymbolKind::Field, self.src, self.symbols);
+                            }
+                        }
+                    }
+                }
+            }
+            // `int a, b;` is one declaration with a declarator per name.
+            "field_declaration" => {
+                for i in 0..node.named_child_count() {
+                    let Some(decl) = node.named_child(i as u32) else {
+                        continue;
+                    };
+                    if decl.kind() != "variable_declaration" {
+                        continue;
+                    }
+                    for j in 0..decl.named_child_count() {
+                        if let Some(v) = decl.named_child(j as u32) {
+                            if v.kind() == "variable_declarator" {
+                                push_named(v, "name", SymbolKind::Field, self.src, self.symbols);
+                            }
+                        }
+                    }
+                }
+            }
+            "property_declaration" => {
+                push_named(node, "name", SymbolKind::Field, self.src, self.symbols)
+            }
+            "enum_member_declaration" => {
+                push_named(node, "name", SymbolKind::Variant, self.src, self.symbols)
             }
             "method_declaration" | "constructor_declaration" => {
                 return self.enter_function(node, SymbolKind::Method, scope);
@@ -328,7 +365,7 @@ fn span_of(node: Node) -> Span {
 mod tests {
     use super::*;
     use compass_core::EdgeConfidence;
-    use compass_core::SymbolKind::{Class, Enum, Interface, Method, Struct};
+    use compass_core::SymbolKind::{Class, Enum, Field, Interface, Method, Struct, Variant};
     use compass_extract::testing::MockResolutionContext;
     use compass_extract::{LangConfig, RawImport, ResolvedImport};
 
@@ -393,15 +430,20 @@ namespace Company.App
             .collect();
         got.sort();
         let mut want = vec![
+            ("A".to_string(), Field), // record positional parameter
+            ("B".to_string(), Field),
             ("Color".to_string(), Enum),
+            ("Green".to_string(), Variant),
             ("Greet".to_string(), Method), // interface method declaration
             ("IGreeter".to_string(), Interface),
             ("Main".to_string(), Method),
             ("Pair".to_string(), Struct), // record -> Struct
             ("Point".to_string(), Struct),
+            ("Red".to_string(), Variant),
             ("Program".to_string(), Class),
             ("Program".to_string(), Method), // constructor -> Method (same name as class)
             ("Run".to_string(), Method),
+            ("X".to_string(), Field),
         ];
         want.sort();
         assert_eq!(got, want);
@@ -529,5 +571,59 @@ class Service {
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn emits_fields_properties_record_components_and_variants() {
+        let src = "class C {
+    int a, b;
+    public string Name { get; set; }
+    event Action Changed;
+    void M() { int local = 1; }
+}
+enum E {
+    One,
+    Two = 2
+}
+record R(int X, string Y);
+";
+        let got: Vec<(String, SymbolKind, usize)> = extract(src)
+            .symbols
+            .into_iter()
+            .filter(|s| matches!(s.kind, Field | Variant))
+            .map(|s| (s.name, s.kind, s.span.start_row + 1))
+            .collect();
+        let want: Vec<(String, SymbolKind, usize)> = [
+            ("a", Field, 2),
+            ("b", Field, 2),
+            ("Name", Field, 3),
+            ("One", Variant, 8),
+            ("Two", Variant, 9),
+            ("X", Field, 11),
+            ("Y", Field, 11),
+        ]
+        .iter()
+        .map(|(n, k, l)| (n.to_string(), *k, *l))
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn members_never_capture_calls() {
+        let src = "class S {
+    int f = Make();
+    int P { get; set; }
+    void Run() { Helper(); }
+    void Helper() {}
+    int Make() { return 1; }
+}
+";
+        let ex = extract(src);
+        let got: Vec<(String, String)> = ex
+            .calls
+            .iter()
+            .map(|c| (ex.symbols[c.caller].name.clone(), c.callee.clone()))
+            .collect();
+        assert_eq!(got, [("Run".to_string(), "Helper".to_string())]);
     }
 }
